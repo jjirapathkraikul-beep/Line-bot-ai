@@ -78,6 +78,12 @@ web_modules/
 .next
 out
 
+# Claude Code memory (local only)
+.claude/
+
+# Next.js generated types
+next-env.d.ts
+
 # Nuxt.js build / generate output
 .nuxt
 dist
