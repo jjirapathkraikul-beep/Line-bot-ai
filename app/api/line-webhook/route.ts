@@ -36,10 +36,23 @@ function getLineClient(): Client {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  const channelSecret = process.env.LINE_CHANNEL_SECRET;
+  if (!channelSecret) {
+    console.error('[Webhook] LINE_CHANNEL_SECRET is not configured');
+    return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
+  }
+
   const rawBody = await req.text();
   const signature = req.headers.get('x-line-signature') ?? '';
 
-  if (!validateSignature(rawBody, process.env.LINE_CHANNEL_SECRET!, signature)) {
+  let signatureValid = false;
+  try {
+    signatureValid = validateSignature(rawBody, channelSecret, signature);
+  } catch {
+    signatureValid = false;
+  }
+
+  if (!signatureValid) {
     console.warn('[Webhook] Invalid LINE signature');
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
