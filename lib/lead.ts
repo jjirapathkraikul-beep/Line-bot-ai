@@ -2,7 +2,25 @@ import type { LeadUpsert } from '@/types/faq';
 
 const CRM_TIMEOUT_MS = 10_000;
 
-type CrmPayload = Pick<LeadUpsert, 'line_user_id' | 'last_question' | 'last_contact_date' | 'lead_status' | 'interest'>;
+// CRM sheet headers (must match row 1 in Google Sheet)
+const CRM_FIELDS: Array<keyof LeadUpsert> = [
+  'line_user_id',
+  'display_name',
+  'real_name',
+  'age',
+  'gender',
+  'phone',
+  'purchase_objective',
+  'product_interest',
+  'budget',
+  'preferred_contact_time',
+  'lead_status',
+  'follow_up_status',
+  'last_question',
+  'conversation_summary',
+  'first_contact_date',
+  'last_contact_date',
+];
 
 export async function upsertLead(data: LeadUpsert): Promise<void> {
   const url = process.env.LEAD_SHEET_CSV_URL;
@@ -18,22 +36,26 @@ export async function upsertLead(data: LeadUpsert): Promise<void> {
     return;
   }
 
-  const payload: CrmPayload = {
-    line_user_id: data.line_user_id,
-    last_question: data.last_question?.substring(0, 300) ?? '',
+  // Build payload: only CRM_FIELDS, fill missing with empty string
+  const payload: Record<string, string> = {
     last_contact_date: new Date().toISOString().split('T')[0],
-    lead_status: data.lead_status ?? 'new',
-    interest: data.interest ?? '',
   };
+  for (const field of CRM_FIELDS) {
+    const val = data[field];
+    if (val !== undefined && val !== null && val !== '') {
+      payload[field] = String(val);
+    }
+  }
+  // Ensure line_user_id always present
+  payload.line_user_id = data.line_user_id;
 
-  const bodyJson = JSON.stringify(payload);
-  console.log(`[CRM] POST fields=${Object.keys(payload).join(',')}`);
+  console.log(`[CRM] POST fields=${Object.keys(payload).filter(k => payload[k]).join(',')}`);
 
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: bodyJson,
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(CRM_TIMEOUT_MS),
     });
 

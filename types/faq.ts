@@ -10,8 +10,20 @@ export interface Lead {
   line_user_id: string;
   display_name: string;
   real_name: string;
-  phone: string;
   age: string;
+  gender: string;
+  phone: string;
+  purchase_objective: string;
+  product_interest: string;
+  budget: string;
+  preferred_contact_time: string;
+  lead_status: string;
+  follow_up_status: string;
+  last_question: string;
+  conversation_summary: string;
+  first_contact_date: string;
+  last_contact_date: string;
+  // legacy fields kept for backward compat
   occupation: string;
   monthly_income: string;
   tax_bracket: string;
@@ -19,15 +31,7 @@ export interface Lead {
   children: string;
   interest: string;
   budget_annual: string;
-  product_interest: string;
-  lead_status: string;
-  follow_up_status: string;
-  last_question: string;
-  conversation_summary: string;
-  preferred_contact_time: string;
   source: string;
-  first_contact_date: string;
-  last_contact_date: string;
 }
 
 export type LeadUpsert = Partial<Lead> & Pick<Lead, 'line_user_id'>;
