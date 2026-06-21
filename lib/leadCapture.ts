@@ -141,20 +141,16 @@ const ALL_INTENT_TRIGGERS = [...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS, ...INTEREST
 // Field-level data (product/age/gender) is lost too.
 // Permanent solution: migrate to Vercel KV (see requirement 7 plan).
 
-const userLeadData     = new Map<string, ExtractedData>();
-const awaitingPhone    = new Map<string, { startedAt: number }>();
-const awaitingGoal     = new Map<string, { startedAt: number }>();
-const awaitingCategory = new Map<string, { startedAt: number }>();
-const awaitingResume   = new Map<string, { startedAt: number }>();
-const awaitingField    = new Map<string, {
+// Exported so session.ts can reference the shape directly
+export type AwaitingFieldEntry = {
   field: LeadField;
   queue: LeadField[];
   startedAt: number;
   mode: 'general' | 'premium_quote' | 'handoff';
-}>();
+};
 
 // stateMetadata survives cancelAllCapture so resume works after flow ends
-interface StateMetadata {
+export interface StateMetadata {
   lastState:    string;
   lastIntent:   string;
   stateUpdatedAt: number;
@@ -162,7 +158,20 @@ interface StateMetadata {
   pendingQueue?:  LeadField[];
   pendingMode?:   'general' | 'premium_quote' | 'handoff';
 }
-const stateMetadata = new Map<string, StateMetadata>();
+
+export interface SessionStateData {
+  data?:            ExtractedData;
+  awaitingField?:   AwaitingFieldEntry;
+  awaitingCategory?: { startedAt: number };
+  awaitingResume?:  { startedAt: number };
+  meta?:            StateMetadata;
+}
+
+const userLeadData     = new Map<string, ExtractedData>();
+const awaitingCategory = new Map<string, { startedAt: number }>();
+const awaitingResume   = new Map<string, { startedAt: number }>();
+const awaitingField    = new Map<string, AwaitingFieldEntry>();
+const stateMetadata    = new Map<string, StateMetadata>();
 
 function alive(entry: { startedAt: number }, ms = TIMEOUT_MS): boolean {
   return Date.now() - entry.startedAt < ms;
@@ -213,19 +222,6 @@ export function isAwaitingField(userId: string): boolean {
   return true;
 }
 
-export function isAwaitingPhone(userId: string): boolean {
-  const e = awaitingPhone.get(userId);
-  if (!e) return false;
-  if (!alive(e, TIMEOUT_MS)) { awaitingPhone.delete(userId); return false; }
-  return true;
-}
-
-export function isAwaitingGoal(userId: string): boolean {
-  const e = awaitingGoal.get(userId);
-  if (!e) return false;
-  if (!alive(e, TIMEOUT_MS)) { awaitingGoal.delete(userId); return false; }
-  return true;
-}
 
 export function isAwaitingCategory(userId: string): boolean {
   const e = awaitingCategory.get(userId);
@@ -245,8 +241,6 @@ export function getCurrentState(userId: string): string {
   if (isAwaitingField(userId))    return `awaiting_field:${awaitingField.get(userId)?.field ?? ''}`;
   if (isAwaitingResume(userId))   return 'awaiting_resume';
   if (isAwaitingCategory(userId)) return 'awaiting_category';
-  if (isAwaitingGoal(userId))     return 'awaiting_goal';
-  if (isAwaitingPhone(userId))    return 'awaiting_phone';
   return 'idle';
 }
 
@@ -348,14 +342,10 @@ export function cancelFieldCapture(userId: string): void {
   awaitingField.delete(userId);
 }
 
-export function cancelAwaitingPhone(userId: string): void { awaitingPhone.delete(userId); }
-
 export function cancelAllCapture(userId: string): void {
   const curState = getCurrentState(userId);
   saveStateMetadata(userId, { lastState: curState, pendingField: undefined });
   awaitingField.delete(userId);
-  awaitingPhone.delete(userId);
-  awaitingGoal.delete(userId);
   awaitingCategory.delete(userId);
   awaitingResume.delete(userId);
 }
@@ -751,51 +741,6 @@ export function handleCategoryAwait(userId: string, text: string): CaptureRespon
   return { reply: '' };
 }
 
-// ─── Phone → Goal flow ────────────────────────────────────────────────────────
-
-export function startPhoneAwait(userId: string): CaptureResponse {
-  awaitingPhone.set(userId, { startedAt: Date.now() });
-  return { reply: '😊 ขอเบอร์ที่สะดวกรับสายด้วยครับ' };
-}
-
-export function handlePhoneAwait(userId: string, text: string): CaptureResponse {
-  if (CANCEL_KEYWORDS.some((kw) => text.includes(kw))) {
-    awaitingPhone.delete(userId);
-    return {
-      reply: 'รับทราบครับ 😊\nพิมพ์ "ติดต่อคุณจิราวัฒน์" ได้เลยถ้าต้องการนัดคุยภายหลัง',
-      cancelled: true,
-    };
-  }
-  const phone = detectPhone(text);
-  if (!phone) return { reply: '' };
-
-  awaitingPhone.delete(userId);
-  accumulateLeadData(userId, { phone });
-  awaitingGoal.set(userId, { startedAt: Date.now() });
-  return {
-    phoneCaptured: phone,
-    reply: 'ขอบคุณครับ 🙏\n\nสนใจวางแผนเรื่องไหนครับ?',
-    quickReply: QR_GOALS,
-  };
-}
-
-const GOAL_MAP: Record<string, string> = {
-  '1': 'ลดหย่อนภาษี', '2': 'ประกันสุขภาพ',
-  '3': 'ประกันมะเร็ง', '4': 'ลงทุนระยะยาว',
-};
-
-export function handleGoalAwait(userId: string, text: string, displayName: string): CaptureResponse {
-  if (CANCEL_KEYWORDS.some((kw) => text.includes(kw))) {
-    awaitingGoal.delete(userId);
-    return { reply: 'รับทราบครับ 😊', cancelled: true, done: true };
-  }
-  const goal = GOAL_MAP[text.trim()] ?? text.trim();
-  accumulateLeadData(userId, { purchase_objective: goal });
-  awaitingGoal.delete(userId);
-  const data = getLeadData(userId);
-  const { score, total } = getLeadCompleteness(userId);
-  return { reply: buildSummary(displayName, data, score, total), done: true };
-}
 
 // ─── Summary builders ─────────────────────────────────────────────────────────
 
@@ -882,5 +827,26 @@ export function buildStatePayload(userId: string): Pick<LeadUpsert, 'current_sta
     current_state:    debug.currentState,
     last_intent:      debug.lastIntent,
     state_updated_at: new Date().toISOString(),
+  };
+}
+
+// ─── KV Hydrate / Dehydrate ───────────────────────────────────────────────────
+// Called by session.ts to sync KV-persisted state into the in-memory Maps and back.
+
+export function hydrateUserState(userId: string, s: SessionStateData): void {
+  if (s.data)            userLeadData.set(userId, s.data);
+  if (s.awaitingField)   awaitingField.set(userId, s.awaitingField);
+  if (s.awaitingCategory) awaitingCategory.set(userId, s.awaitingCategory);
+  if (s.awaitingResume)  awaitingResume.set(userId, s.awaitingResume);
+  if (s.meta)            stateMetadata.set(userId, s.meta);
+}
+
+export function dehydrateUserState(userId: string): SessionStateData {
+  return {
+    data:             userLeadData.get(userId),
+    awaitingField:    awaitingField.get(userId),
+    awaitingCategory: awaitingCategory.get(userId),
+    awaitingResume:   awaitingResume.get(userId),
+    meta:             stateMetadata.get(userId),
   };
 }

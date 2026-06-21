@@ -6,12 +6,19 @@ import { buildSystemPrompt } from '@/lib/prompt';
 import { getChatReply } from '@/lib/openai';
 import { upsertLead } from '@/lib/lead';
 import { isAdmin, isAdminCommand, handleAdminCommand } from '@/lib/admin';
-import { notifyAdminIfNeeded, shouldNotifyHighScore } from '@/lib/adminNotify';
+import { notifyAdminIfNeeded } from '@/lib/adminNotify';
+import { hydrateAll, dehydrateAll, saveSession, deleteSession } from '@/lib/session';
+import {
+  handleAllCaptured,
+  saveHandoffCrm,
+  saveQuoteCrm,
+  saveCrm,
+  logNotifyErr,
+} from '@/lib/leadService';
 import {
   extractFromText,
   accumulateLeadData,
   getLeadData,
-  hasPhone,
   getMissingFields,
   getLeadCompleteness,
   getCurrentState,
@@ -23,10 +30,6 @@ import {
   isInterestTrigger,
   isAnyTrigger,
   PREMIUM_QUOTE_FIELDS,
-  isAwaitingPhone,
-  handlePhoneAwait,
-  isAwaitingGoal,
-  handleGoalAwait,
   isAwaitingField,
   startFieldCapture,
   handleFieldCapture,
@@ -39,14 +42,14 @@ import {
   hasExpiredStateForResume,
   trySmartResume,
   cancelFieldCapture,
-  cancelAwaitingPhone,
-  buildLeadPayload,
   buildQuoteSummary,
   buildHandoffSummary,
   extractProductFromText,
   isHandoffTrigger,
   HANDOFF_REQUIRED_FIELDS,
-  QR_INSURANCE_CATEGORIES,
+  cancelAllCapture,
+  clearLeadData,
+  clearStateMetadata,
   type QuickReplyOption,
 } from '@/lib/leadCapture';
 
@@ -54,7 +57,7 @@ export const dynamic    = 'force-dynamic';
 export const maxDuration = 30;
 
 // ─── Version probe ────────────────────────────────────────────────────────────
-const CODE_VERSION = 'v11-admin-notify';
+const CODE_VERSION = 'v1.9-stability';
 
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
@@ -64,8 +67,7 @@ export async function GET(): Promise<NextResponse> {
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
-const rateLimitMap     = new Map<string, { count: number; resetAt: number }>();
-const displayNameCache = new Map<string, string>();
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function isRateLimited(userId: string): boolean {
   const now   = Date.now();
@@ -86,11 +88,10 @@ function getLineClient(): Client {
   });
 }
 
-async function getDisplayName(client: Client, userId: string): Promise<string> {
-  if (displayNameCache.has(userId)) return displayNameCache.get(userId)!;
+async function getDisplayName(client: Client, userId: string, cachedName?: string): Promise<string> {
+  if (cachedName) return cachedName;
   try {
     const p = await client.getProfile(userId);
-    displayNameCache.set(userId, p.displayName);
     return p.displayName;
   } catch { return ''; }
 }
@@ -137,7 +138,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  const body   = JSON.parse(rawBody) as WebhookRequestBody;
+  let body: WebhookRequestBody;
+  try {
+    body = JSON.parse(rawBody) as WebhookRequestBody;
+  } catch {
+    console.error('[Webhook] Invalid JSON payload');
+    return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+  }
+
   const client = getLineClient();
 
   await Promise.all(
@@ -157,18 +165,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 1. Passive extraction ─────────────────────────────────────────────
-      accumulateLeadData(userId, extractFromText(userMessage));
-      const displayName = await getDisplayName(client, userId);
+      // ── 1. Load session from KV + hydrate all in-memory Maps ─────────────
+      const session     = await hydrateAll(userId);
+      const displayName = await getDisplayName(client, userId, session.displayName);
 
-      // ── 2. Admin commands (#reset / #debug / #whoami / #testnotify / #help) ─
+      // Helper to send + persist state in one step
+      const reply = (text: string, qr?: QuickReplyOption[]) =>
+        sendReply(client, replyToken, text, qr);
+
+      // ── 2. Passive extraction ──────────────────────────────────────────────
+      accumulateLeadData(userId, extractFromText(userMessage));
+
+      // ── 3. Admin commands ──────────────────────────────────────────────────
       if (isAdminCommand(userMessage)) {
         if (!isAdmin(userId)) {
-          await sendReply(client, replyToken, 'คำสั่งนี้ใช้ได้เฉพาะผู้ดูแลระบบครับ');
+          await reply('คำสั่งนี้ใช้ได้เฉพาะผู้ดูแลระบบครับ');
           return;
         }
 
-        // #testnotify — async, handled here before the sync handler
+        // #testnotify — async, handled before the sync handler
         if (userMessage.trim().toLowerCase() === '#testnotify') {
           console.log(`[Admin] command=#testnotify userId=${userId.substring(0, 8)}***`);
           const mockData = {
@@ -179,49 +194,59 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           const adminId = process.env.ADMIN_LINE_USER_ID ?? '';
           const token   = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? '';
           if (!adminId || !token) {
-            await sendReply(client, replyToken, '❌ ADMIN_LINE_USER_ID หรือ LINE_CHANNEL_ACCESS_TOKEN ยังไม่ได้ตั้งค่าครับ');
+            await reply('❌ ADMIN_LINE_USER_ID หรือ LINE_CHANNEL_ACCESS_TOKEN ยังไม่ได้ตั้งค่าครับ');
             return;
           }
           try {
-            // Bypass dedup for test: call pushMessage directly
-            const { Client: LineClient } = await import('@line/bot-sdk');
-            const lc = new LineClient({ channelAccessToken: token });
-            const score = 80;
-            const text  = [
-              '🔥 HOT LEAD เข้าใหม่ [TEST]',
-              '',
-              `👤 ชื่อ: ${mockData.real_name} (Admin Test)`,
+            const lc   = new Client({ channelAccessToken: token });
+            const text = [
+              '🔥 HOT LEAD เข้าใหม่ [TEST]', '',
+              `👤 ชื่อ: ${mockData.real_name}`,
               `🎂 อายุ: ${mockData.age} ปี`,
               `🚻 เพศ: ${mockData.gender}`,
               `📞 เบอร์: ${mockData.phone}`,
               `🕒 เวลาสะดวก: ${mockData.preferred_contact_time}`,
               `📌 สนใจ: ${mockData.product_interest}`,
-              `⭐ Lead Score: ${score}/100`,
-              `📍 Lead Status: HOT`,
-              '',
+              `⭐ Lead Score: 80/100`,
+              `📍 Lead Status: HOT`, '',
               '📝 สรุป:',
-              'สนใจ: ประกันสุขภาพ | ช่วงเวลา: ช่วงเช้า 09:00-12:00 | ทดสอบระบบแจ้งเตือน',
-              '',
+              'สนใจ: ประกันสุขภาพ | ช่วงเวลา: ช่วงเช้า 09:00-12:00 | ทดสอบระบบแจ้งเตือน', '',
               '✅ แนะนำให้ติดต่อกลับทันที',
             ].join('\n');
             await lc.pushMessage(adminId, { type: 'text', text });
-            await sendReply(client, replyToken,
-              '✅ ส่งการแจ้งเตือนทดสอบไปแล้วครับ\n\nตรวจสอบ LINE ส่วนตัวของ Admin ได้เลยครับ'
-            );
+            await reply('✅ ส่งการแจ้งเตือนทดสอบไปแล้วครับ\n\nตรวจสอบ LINE ส่วนตัวของ Admin ได้เลยครับ');
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`[Admin] #testnotify failed: ${msg}`);
-            await sendReply(client, replyToken, `❌ ส่งไม่สำเร็จ: ${msg}`);
+            await reply(`❌ ส่งไม่สำเร็จ: ${msg}`);
           }
           return;
         }
 
+        // #reset — also clears KV session
+        if (userMessage.trim().toLowerCase() === '#reset') {
+          cancelAllCapture(userId);
+          clearLeadData(userId);
+          clearStateMetadata(userId);
+          await deleteSession(userId).catch((e) =>
+            console.error('[Admin] deleteSession error:', e instanceof Error ? e.message : String(e))
+          );
+          await reply(
+            '🔄 รีเซ็ตข้อมูลการทดสอบเรียบร้อยแล้วครับ\n\n' +
+            'สิ่งที่ถูกล้าง:\n' +
+            '• State (field capture)\n' +
+            '• Lead data ใน memory + KV\n\n' +
+            'พร้อมเริ่มทดสอบใหม่ครับ 🧪'
+          );
+          return;
+        }
+
         const result = handleAdminCommand(userId, userMessage, displayName);
-        await sendReply(client, replyToken, result.reply);
+        await reply(result.reply);
         return;
       }
 
-      // ── 3. Debug logging ──────────────────────────────────────────────────
+      // ── 4. Debug logging ──────────────────────────────────────────────────
       const { score, total }          = getLeadCompleteness(userId);
       const missingHandoff            = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
       const dbg                       = getStateDebugInfo(userId);
@@ -243,46 +268,46 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         ` msg="${userMessage.substring(0, 40)}"`
       );
 
-      // ── 4. Resume prompt response ─────────────────────────────────────────
+      // ── 5. Resume prompt response ──────────────────────────────────────────
       if (isAwaitingResume(userId)) {
         const result = handleResumeAwait(userId, userMessage);
         if (!result.fallthrough) {
-          if (result.reply) await sendReply(client, replyToken, result.reply, result.quickReply);
-          if (result.resumed && result.reply) return; // already replied with next field
-          if (result.reset) return;
-          if (result.resumed) { /* fall through to field capture if reply was empty */ }
+          if (result.reply) await reply(result.reply, result.quickReply);
+          if (result.reset) {
+            // User chose "เริ่มใหม่" — state cleared, persist that to KV
+            await deleteSession(userId).catch(logSessionErr);
+            return;
+          }
+          if (result.resumed && result.reply) {
+            // User chose "คุยต่อ" — awaitingField was restored, save to KV
+            await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+            return;
+          }
+          if (result.resumed) { /* fall through to field capture */ }
           else return;
         }
-        // fallthrough: intent detected mid-resume → continue below
       }
 
-      // ── 5. Expired-state smart resume ─────────────────────────────────────
-      // If field capture expired but stateMetadata shows pending field within 7d:
-      //   a) If user's message directly answers the pending field → auto-restore silently
-      //   b) If not an intent trigger → show "คุยต่อ / เริ่มใหม่?" prompt
+      // ── 6. Expired-state smart resume ─────────────────────────────────────
       if (!isAwaitingField(userId) && !isAwaitingResume(userId) && hasExpiredStateForResume(userId)) {
         const autoResult = trySmartResume(userId, userMessage);
         if (autoResult) {
-          // Auto-resumed: user's message was a valid field answer
           if (autoResult.reply) {
-            await sendReply(client, replyToken, autoResult.reply, autoResult.quickReply);
+            await reply(autoResult.reply, autoResult.quickReply);
           } else if (autoResult.done && autoResult.allCaptured) {
-            await handleAllCaptured(autoResult.mode, userId, displayName, userMessage, client, replyToken);
+            await handleAllCaptured(autoResult.mode, userId, displayName, userMessage, reply);
           }
           return;
         }
-
-        // Can't auto-resume → if not an intent trigger, show resume prompt
         if (!isAnyTrigger(userMessage)) {
           setLastIntent(userId, 'resume_prompt');
           const prompt = startResumeFlow(userId);
-          await sendReply(client, replyToken, prompt.reply, prompt.quickReply);
+          await reply(prompt.reply, prompt.quickReply);
           return;
         }
-        // Intent trigger → skip resume prompt, fall through to intent handlers
       }
 
-      // ── 6. Targeted field capture ─────────────────────────────────────────
+      // ── 7. Targeted field capture ─────────────────────────────────────────
       if (isAwaitingField(userId)) {
         if (isAnyTrigger(userMessage)) {
           console.log('[Lead] intent switch while awaiting_field — cancelling');
@@ -292,7 +317,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           const result = handleFieldCapture(userId, userMessage);
 
           if (result.reply) {
-            await sendReply(client, replyToken, result.reply, result.quickReply);
+            await reply(result.reply, result.quickReply);
             // Partial CRM + admin notification after phone is captured mid-flow
             if (result.capturedField === 'phone') {
               const d = getLeadData(userId);
@@ -300,23 +325,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                 line_user_id: userId, display_name: displayName,
                 phone: d.phone ?? '', follow_up_status: 'Collecting Info',
                 ...buildStatePayload(userId),
-              }).catch(logCrmErr);
+              }).catch((e) => console.error('[CRM] partial phone save:', e instanceof Error ? e.message : String(e)));
               notifyAdminIfNeeded(userId, displayName, d, 'phone_first').catch(logNotifyErr);
             }
           } else if (result.done && result.allCaptured) {
-            await handleAllCaptured(result.mode, userId, displayName, userMessage, client, replyToken);
+            await handleAllCaptured(result.mode, userId, displayName, userMessage, reply);
           } else if (result.done && result.cancelled) {
-            await sendReply(client, replyToken, result.reply);
+            await reply(result.reply);
           }
+
+          // Persist state to KV after field capture
+          await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
           return;
         }
       }
 
-      // ── 7. Category await ─────────────────────────────────────────────────
+      // ── 8. Category await ─────────────────────────────────────────────────
       if (isAwaitingCategory(userId) && !isAnyTrigger(userMessage)) {
         const catResult = handleCategoryAwait(userId, userMessage);
         if (catResult.cancelled) {
-          await sendReply(client, replyToken, catResult.reply);
+          await reply(catResult.reply);
           return;
         }
         const category = getLeadData(userId).product_interest ?? userMessage;
@@ -324,68 +352,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (missing.length > 0) {
           const intro  = `😊 ${category}\n\nขอข้อมูลเพิ่มเล็กน้อยนะครับ`;
           const fieldQ = startFieldCapture(userId, missing, intro, 'handoff');
-          await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
+          await reply(fieldQ.reply, fieldQ.quickReply);
         } else {
           const data = getLeadData(userId);
-          await sendReply(client, replyToken, buildHandoffSummary(data));
+          await reply(buildHandoffSummary(data));
           await saveHandoffCrm(userId, displayName, userMessage);
         }
         await saveCrm(userId, displayName, userMessage);
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
 
-      // ── 8. Goal capture ───────────────────────────────────────────────────
-      if (isAwaitingGoal(userId) && !isQuoteTrigger(userMessage)) {
-        const result = handleGoalAwait(userId, userMessage, displayName);
-        await sendReply(client, replyToken, result.reply, result.quickReply);
-        if (result.done && !result.cancelled) {
-          const data    = getLeadData(userId);
-          const payload = buildLeadPayload(userId, displayName, data);
-          await upsertLead({
-            ...payload,
-            last_question: userMessage.substring(0, 300),
-            ...buildStatePayload(userId),
-          }).catch(logCrmErr);
-        }
-        return;
-      }
-
-      // ── 9. Phone capture ──────────────────────────────────────────────────
-      if (isAwaitingPhone(userId)) {
-        if (isQuoteTrigger(userMessage) || isInterestTrigger(userMessage)) {
-          cancelAwaitingPhone(userId);
-          // fall through
-        } else {
-          const result = handlePhoneAwait(userId, userMessage);
-          if (result.reply) {
-            await sendReply(client, replyToken, result.reply, result.quickReply);
-            if (result.phoneCaptured) {
-              await upsertLead({
-                line_user_id: userId, display_name: displayName,
-                phone: result.phoneCaptured, lead_status: 'interested',
-                follow_up_status: 'awaiting_goal',
-                ...buildStatePayload(userId),
-              }).catch(logCrmErr);
-            }
-            return;
-          }
-          // No phone detected → fall through to OpenAI
-        }
-      }
-
-      // ── 10. Interest trigger → 6-category Quick Reply ─────────────────────
+      // ── 9. Interest trigger → 6-category Quick Reply ──────────────────────
       if (isInterestTrigger(userMessage)) {
         setLastIntent(userId, 'interest');
         const result = startCategoryFlow(userId);
-        await sendReply(client, replyToken, result.reply, result.quickReply);
+        await reply(result.reply, result.quickReply);
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
 
-      // ── 11. Handoff trigger → collect 6 required fields → summary ────────
-      // Covers: เช็กเบี้ย, ค่าเบี้ยเท่าไร, ขอใบเสนอราคา, สนใจสมัคร, ให้ติดต่อกลับ, etc.
+      // ── 10. Handoff trigger → collect 6 required fields → summary ─────────
       if (isHandoffTrigger(userMessage)) {
         setLastIntent(userId, 'handoff');
-        cancelAwaitingPhone(userId);
         const data    = getLeadData(userId);
         const missing = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
         console.log(`[Lead] intent=handoff missing=${missing.join(',') || 'none'}`);
@@ -398,17 +387,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
 
         if (missing.length === 0) {
-          await sendReply(client, replyToken, buildHandoffSummary(data));
+          await reply(buildHandoffSummary(data));
           await saveHandoffCrm(userId, displayName, userMessage);
         } else {
           const fieldQ = startFieldCapture(userId, missing, undefined, 'handoff');
-          await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
+          await reply(fieldQ.reply, fieldQ.quickReply);
         }
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
 
-      // ── 12. Product mention → premium quote (age/gender/budget) ──────────
-      // Catches: "ประกันสุขภาพ", "Good Health Prime", etc. without a trigger prefix.
+      // ── 11. Product mention → premium quote (age/gender/budget) ──────────
       const mentionedProduct = extractProductFromText(userMessage);
       if (mentionedProduct) {
         setLastIntent(userId, 'product_mention');
@@ -416,114 +405,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
         console.log(`[Lead] intent=product_mention product=${mentionedProduct} missing=${missing.join(',') || 'none'}`);
         if (missing.length === 0) {
-          await sendReply(client, replyToken, buildQuoteSummary(getLeadData(userId)));
+          await reply(buildQuoteSummary(getLeadData(userId)));
           await saveQuoteCrm(userId, displayName, userMessage);
         } else {
           const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
-          await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
+          await reply(fieldQ.reply, fieldQ.quickReply);
         }
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
 
-      // ── 13. Normal OpenAI flow ─────────────────────────────────────────────
+      // ── 12. Normal OpenAI flow ─────────────────────────────────────────────
       setLastIntent(userId, 'openai');
       const faqs         = await fetchFaq();
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
-      const reply        = await getChatReply(userId, systemPrompt, userMessage);
-      await sendReply(client, replyToken, reply);
+      const aiReply      = await getChatReply(userId, systemPrompt, userMessage);
+      await reply(aiReply);
 
       await saveCrm(userId, displayName, userMessage);
+      await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
     })
   );
 
   return NextResponse.json({ ok: true });
 }
 
-// ─── Shared allCaptured handler ───────────────────────────────────────────────
-// Called from both regular and auto-resume field capture completion paths.
-async function handleAllCaptured(
-  mode: string | undefined,
-  userId: string, displayName: string, lastMsg: string,
-  client: Client, replyToken: string
-): Promise<void> {
-  if (mode === 'handoff') {
-    const data = getLeadData(userId);
-    await sendReply(client, replyToken, buildHandoffSummary(data));
-    await saveHandoffCrm(userId, displayName, lastMsg);
-    return;
-  }
-  if (mode === 'premium_quote') {
-    const data = getLeadData(userId);
-    await sendReply(client, replyToken, buildQuoteSummary(data));
-    await saveQuoteCrm(userId, displayName, lastMsg);
-    return;
-  }
-  // general / unknown — check if handoff fields are still missing
-  const missingHandoff = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
-  if (missingHandoff.length > 0) {
-    const msg    = `รับข้อมูลแล้วครับ 😊 ยังขาดอีก ${missingHandoff.length} ข้อ`;
-    const fieldQ = startFieldCapture(userId, missingHandoff, msg, 'handoff');
-    await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
-  } else {
-    const data = getLeadData(userId);
-    await sendReply(client, replyToken, buildHandoffSummary(data));
-    await saveHandoffCrm(userId, displayName, lastMsg);
-  }
-}
-
-// ─── CRM save helpers ─────────────────────────────────────────────────────────
-
-async function saveQuoteCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
-  const data = getLeadData(userId);
-  console.log(`[CRM] quote save uid=${userId.substring(0, 8)}***`);
-  await upsertLead({
-    line_user_id: userId, display_name: displayName,
-    ...data,
-    last_question: lastMsg.substring(0, 300),
-    purchase_objective: 'เช็กเบี้ย/ขอใบเสนอราคา',
-    follow_up_status: 'Quotation Requested',
-    lead_status: data.phone ? 'hot' : 'warm',
-    ...buildStatePayload(userId),
-  }).catch(logCrmErr);
-}
-
-async function saveHandoffCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
-  const data = getLeadData(userId);
-  console.log(`[CRM] handoff save uid=${userId.substring(0, 8)}***`);
-  await upsertLead({
-    line_user_id: userId, display_name: displayName,
-    ...data,
-    last_question: lastMsg.substring(0, 300),
-    purchase_objective: data.purchase_objective || 'ขอให้ติดต่อกลับ',
-    follow_up_status: 'Contact Requested',
-    lead_status: 'hot',
-    ...buildStatePayload(userId),
-  }).catch(logCrmErr);
-  // Admin notification — fire-and-forget, never blocks customer reply
-  notifyAdminIfNeeded(userId, displayName, data, 'handoff_complete').catch(logNotifyErr);
-}
-
-async function saveCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
-  const data = getLeadData(userId);
-  const { score, total } = getLeadCompleteness(userId);
-  console.log(`[CRM] save score=${score}/${total} uid=${userId.substring(0, 8)}***`);
-  await upsertLead({
-    line_user_id: userId, display_name: displayName,
-    ...data,
-    last_question: lastMsg.substring(0, 300),
-    lead_status: hasPhone(userId) ? 'qualified' : 'new',
-    ...buildStatePayload(userId),
-  }).catch(logCrmErr);
-  // Notify admin if lead score crosses 70 for the first time
-  if (shouldNotifyHighScore(data)) {
-    notifyAdminIfNeeded(userId, displayName, data, 'score_high').catch(logNotifyErr);
-  }
-}
-
-function logCrmErr(err: unknown): void {
-  console.error(`[CRM] save error: ${err instanceof Error ? err.message : String(err)}`);
-}
-
-function logNotifyErr(err: unknown): void {
-  console.error(`[Handoff] notify error: ${err instanceof Error ? err.message : String(err)}`);
+function logSessionErr(err: unknown): void {
+  console.error(`[Session] save error: ${err instanceof Error ? err.message : String(err)}`);
 }

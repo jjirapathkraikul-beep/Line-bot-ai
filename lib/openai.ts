@@ -12,8 +12,11 @@ type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 const conversationHistory = new Map<string, ChatMessage[]>();
 
+// Singleton client — avoids re-instantiation on every call
+let _client: OpenAI | null = null;
 function getClient(): OpenAI {
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  if (!_client) _client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return _client;
 }
 
 function getHistory(userId: string): ChatMessage[] {
@@ -23,6 +26,14 @@ function getHistory(userId: string): ChatMessage[] {
 function saveHistory(userId: string, messages: ChatMessage[]): void {
   const trimmed = messages.length > MAX_HISTORY ? messages.slice(-MAX_HISTORY) : messages;
   conversationHistory.set(userId, trimmed);
+}
+
+// ─── Session bridge — called by session.ts to hydrate/dehydrate ───────────────
+export function injectHistory(userId: string, history: ChatMessage[]): void {
+  if (history.length > 0) conversationHistory.set(userId, history);
+}
+export function extractHistory(userId: string): ChatMessage[] {
+  return conversationHistory.get(userId) ?? [];
 }
 
 function logApiError(context: string, err: unknown): void {
@@ -98,7 +109,7 @@ async function callOpenAI(
   const response = await client.chat.completions.create(
     {
       model,
-      temperature: 1.0,
+      temperature: 0.7,
       max_tokens: 1024,
       messages: [{ role: 'system', content: systemPrompt }, ...history],
     },

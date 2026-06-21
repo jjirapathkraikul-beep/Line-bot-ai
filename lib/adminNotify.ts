@@ -1,12 +1,21 @@
 import { Client } from '@line/bot-sdk';
 import { upsertLead } from './lead';
 import type { ExtractedData } from './leadCapture';
+import { computeLeadScore } from './scorer';
 
 export type NotifyReason = 'phone_first' | 'handoff_complete' | 'score_high' | 'trigger_word';
 
-// In-memory dedup: Map<userId, Set<reason>>
-// Resets on cold start — acceptable since cold start implies a new session
+// In-memory dedup — hydrated from KV session at request start via injectNotifiedReasons
 const sentMap = new Map<string, Set<string>>();
+
+// ─── Session bridge ───────────────────────────────────────────────────────────
+export function injectNotifiedReasons(userId: string, reasons: string[]): void {
+  if (reasons.length > 0) sentMap.set(userId, new Set(reasons));
+  else sentMap.delete(userId);
+}
+export function extractNotifiedReasons(userId: string): string[] {
+  return Array.from(sentMap.get(userId) ?? []);
+}
 
 function alreadySent(userId: string, reason: NotifyReason): boolean {
   return sentMap.get(userId)?.has(reason) ?? false;
@@ -15,11 +24,6 @@ function alreadySent(userId: string, reason: NotifyReason): boolean {
 function markSent(userId: string, reason: NotifyReason): void {
   if (!sentMap.has(userId)) sentMap.set(userId, new Set());
   sentMap.get(userId)!.add(reason);
-}
-
-function computeLeadScore(data: ExtractedData): number {
-  const fields = [data.age, data.gender, data.phone, data.product_interest, data.budget];
-  return Math.round(fields.filter(Boolean).length / fields.length * 100);
 }
 
 function buildSummaryLine(data: ExtractedData, reason: NotifyReason): string {
@@ -93,9 +97,9 @@ export async function notifyAdminIfNeeded(
 
     // Update CRM with notification metadata (fire-and-forget, never blocks customer reply)
     upsertLead({
-      line_user_id:         userId,
-      handoff_notified_at:  new Date().toISOString(),
-      handoff_reason:       reason,
+      line_user_id:        userId,
+      handoff_notified_at: new Date().toISOString(),
+      handoff_reason:      reason,
     }).catch((err) =>
       console.error(`[Handoff] CRM metadata update failed: ${err instanceof Error ? err.message : String(err)}`)
     );
