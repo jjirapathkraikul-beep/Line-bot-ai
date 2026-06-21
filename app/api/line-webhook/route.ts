@@ -22,7 +22,6 @@ import {
   isInterestTrigger,
   isAnyTrigger,
   PREMIUM_QUOTE_FIELDS,
-  QUOTE_REQUIRED_FIELDS,
   isAwaitingPhone,
   handlePhoneAwait,
   isAwaitingGoal,
@@ -54,7 +53,7 @@ export const dynamic    = 'force-dynamic';
 export const maxDuration = 30;
 
 // ─── Version probe ────────────────────────────────────────────────────────────
-const CODE_VERSION = 'v9-handoff';
+const CODE_VERSION = 'v10-handoff-fix';
 
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
@@ -173,22 +172,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
 
       // ── 3. Debug logging ──────────────────────────────────────────────────
-      const { score, total, missing: missingScored } = getLeadCompleteness(userId);
-      const dbg    = getStateDebugInfo(userId);
-      const isQT   = isQuoteTrigger(userMessage);
-      const isCT   = isContactTrigger(userMessage);
-      const isIT   = isInterestTrigger(userMessage);
-      const msgHex = Buffer.from(userMessage, 'utf8').toString('hex').substring(0, 60);
+      const { score, total }          = getLeadCompleteness(userId);
+      const missingHandoff            = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
+      const dbg                       = getStateDebugInfo(userId);
+      const isQT                      = isQuoteTrigger(userMessage);
+      const isCT                      = isContactTrigger(userMessage);
+      const isIT                      = isInterestTrigger(userMessage);
+      const isHT                      = isHandoffTrigger(userMessage);
+      const maskedId                  = `${userId.substring(0, 8)}***`;
       console.log(
         `[Lead] v=${CODE_VERSION}` +
+        ` uid=${maskedId}` +
         ` current_state=${dbg.currentState}` +
         ` last_state=${dbg.lastState}` +
         ` last_intent=${dbg.lastIntent}` +
         ` state_age_min=${dbg.stateAgeMinutes}` +
         ` score=${score}/${total}` +
-        ` missing=${missingScored.join(',') || 'none'}` +
-        ` isQuote=${isQT} isContact=${isCT} isInterest=${isIT}` +
-        ` msg="${userMessage.substring(0, 40)}" hex=${msgHex}`
+        ` missing_handoff=${missingHandoff.join(',') || 'none'}` +
+        ` isHandoff=${isHT} isQuote=${isQT} isContact=${isCT} isInterest=${isIT}` +
+        ` msg="${userMessage.substring(0, 40)}"`
       );
 
       // ── 4. Resume prompt response ─────────────────────────────────────────
@@ -215,21 +217,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           if (autoResult.reply) {
             await sendReply(client, replyToken, autoResult.reply, autoResult.quickReply);
           } else if (autoResult.done && autoResult.allCaptured) {
-            if (autoResult.mode === 'handoff') {
-              const data = getLeadData(userId);
-              await sendReply(client, replyToken, buildHandoffSummary(data));
-              await saveHandoffCrm(userId, displayName, userMessage);
-            } else if (autoResult.mode === 'premium_quote') {
-              const data = getLeadData(userId);
-              await sendReply(client, replyToken, buildQuoteSummary(data));
-              await saveQuoteCrm(userId, displayName, userMessage);
-            } else {
-              const { score: s, total: t } = getLeadCompleteness(userId);
-              await sendReply(client, replyToken,
-                `✅ ข้อมูลครบแล้วครับ (${s}/${t})\n\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊`
-              );
-              await saveCrm(userId, displayName, userMessage);
-            }
+            await handleAllCaptured(autoResult.mode, userId, displayName, userMessage, client, replyToken);
           }
           return;
         }
@@ -255,22 +243,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
           if (result.reply) {
             await sendReply(client, replyToken, result.reply, result.quickReply);
-          } else if (result.done && result.allCaptured) {
-            if (result.mode === 'handoff') {
-              const data = getLeadData(userId);
-              await sendReply(client, replyToken, buildHandoffSummary(data));
-              await saveHandoffCrm(userId, displayName, userMessage);
-            } else if (result.mode === 'premium_quote') {
-              const data = getLeadData(userId);
-              await sendReply(client, replyToken, buildQuoteSummary(data));
-              await saveQuoteCrm(userId, displayName, userMessage);
-            } else {
-              const { score: s, total: t } = getLeadCompleteness(userId);
-              await sendReply(client, replyToken,
-                `✅ ข้อมูลครบแล้วครับ (${s}/${t})\n\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊`
-              );
-              await saveCrm(userId, displayName, userMessage);
+            // Partial CRM save after phone is captured mid-flow (req #2)
+            if (result.capturedField === 'phone') {
+              const d = getLeadData(userId);
+              await upsertLead({
+                line_user_id: userId, display_name: displayName,
+                phone: d.phone ?? '', follow_up_status: 'Collecting Info',
+                ...buildStatePayload(userId),
+              }).catch(logCrmErr);
             }
+          } else if (result.done && result.allCaptured) {
+            await handleAllCaptured(result.mode, userId, displayName, userMessage, client, replyToken);
           } else if (result.done && result.cancelled) {
             await sendReply(client, replyToken, result.reply);
           }
@@ -286,19 +269,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           return;
         }
         const category = getLeadData(userId).product_interest ?? userMessage;
-        const missing  = getMissingFields(userId, QUOTE_REQUIRED_FIELDS);
+        const missing  = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
         if (missing.length > 0) {
-          const intro  = `😊 ${category}\n\nขอข้อมูลเพิ่มเล็กน้อยครับ`;
-          const fieldQ = startFieldCapture(userId, missing, intro);
+          const intro  = `😊 ${category}\n\nขอข้อมูลเพิ่มเล็กน้อยนะครับ`;
+          const fieldQ = startFieldCapture(userId, missing, intro, 'handoff');
           await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
         } else {
-          await sendReply(client, replyToken,
-            `😊 ${category}\n\nข้อมูลครบแล้วครับ 👍\n\nต้องการดำเนินการอะไรต่อดีครับ?`,
-            [
-              { label: '📊 ดูเบี้ยประมาณ', text: 'เช็กเบี้ย' },
-              { label: '📞 ให้ติดต่อกลับ',  text: 'ติดต่อคุณจิราวัฒน์' },
-            ]
-          );
+          const data = getLeadData(userId);
+          await sendReply(client, replyToken, buildHandoffSummary(data));
+          await saveHandoffCrm(userId, displayName, userMessage);
         }
         await saveCrm(userId, displayName, userMessage);
         return;
@@ -402,11 +381,43 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   return NextResponse.json({ ok: true });
 }
 
+// ─── Shared allCaptured handler ───────────────────────────────────────────────
+// Called from both regular and auto-resume field capture completion paths.
+async function handleAllCaptured(
+  mode: string | undefined,
+  userId: string, displayName: string, lastMsg: string,
+  client: Client, replyToken: string
+): Promise<void> {
+  if (mode === 'handoff') {
+    const data = getLeadData(userId);
+    await sendReply(client, replyToken, buildHandoffSummary(data));
+    await saveHandoffCrm(userId, displayName, lastMsg);
+    return;
+  }
+  if (mode === 'premium_quote') {
+    const data = getLeadData(userId);
+    await sendReply(client, replyToken, buildQuoteSummary(data));
+    await saveQuoteCrm(userId, displayName, lastMsg);
+    return;
+  }
+  // general / unknown — check if handoff fields are still missing
+  const missingHandoff = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
+  if (missingHandoff.length > 0) {
+    const msg    = `รับข้อมูลแล้วครับ 😊 ยังขาดอีก ${missingHandoff.length} ข้อ`;
+    const fieldQ = startFieldCapture(userId, missingHandoff, msg, 'handoff');
+    await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
+  } else {
+    const data = getLeadData(userId);
+    await sendReply(client, replyToken, buildHandoffSummary(data));
+    await saveHandoffCrm(userId, displayName, lastMsg);
+  }
+}
+
 // ─── CRM save helpers ─────────────────────────────────────────────────────────
 
 async function saveQuoteCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
   const data = getLeadData(userId);
-  console.log(`[CRM] quote save userId=${userId}`);
+  console.log(`[CRM] quote save uid=${userId.substring(0, 8)}***`);
   await upsertLead({
     line_user_id: userId, display_name: displayName,
     ...data,
@@ -420,7 +431,7 @@ async function saveQuoteCrm(userId: string, displayName: string, lastMsg: string
 
 async function saveHandoffCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
   const data = getLeadData(userId);
-  console.log(`[CRM] handoff save userId=${userId}`);
+  console.log(`[CRM] handoff save uid=${userId.substring(0, 8)}***`);
   await upsertLead({
     line_user_id: userId, display_name: displayName,
     ...data,
@@ -435,7 +446,7 @@ async function saveHandoffCrm(userId: string, displayName: string, lastMsg: stri
 async function saveCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
   const data = getLeadData(userId);
   const { score, total } = getLeadCompleteness(userId);
-  console.log(`[CRM] save score=${score}/${total} userId=${userId}`);
+  console.log(`[CRM] save score=${score}/${total} uid=${userId.substring(0, 8)}***`);
   await upsertLead({
     line_user_id: userId, display_name: displayName,
     ...data,

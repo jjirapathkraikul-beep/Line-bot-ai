@@ -32,6 +32,8 @@ export interface CaptureResponse {
   reset?: boolean;
   fallthrough?: boolean;
   mode?: string;
+  capturedField?: LeadField;   // which field was just saved (for mid-flow CRM)
+  nextState?: string;          // next awaiting_field:X or field_complete
 }
 
 // ─── Field labels (Thai) ──────────────────────────────────────────────────────
@@ -79,9 +81,9 @@ export const QR_AGE: QuickReplyOption[] = [
 ];
 
 export const QR_CONTACT_TIME: QuickReplyOption[] = [
-  { label: '1️⃣ ช่วงเช้า',      text: 'ช่วงเช้า (09:00-12:00)' },
-  { label: '2️⃣ ช่วงบ่าย',      text: 'ช่วงบ่าย (13:00-17:00)' },
-  { label: '3️⃣ หลังเลิกงาน',   text: 'หลังเลิกงาน (18:00-21:00)' },
+  { label: '1️⃣ ช่วงเช้า',      text: 'ช่วงเช้า 09:00-12:00' },
+  { label: '2️⃣ ช่วงบ่าย',      text: 'ช่วงบ่าย 13:00-17:00' },
+  { label: '3️⃣ หลังเลิกงาน',   text: 'หลังเลิกงาน 18:00-21:00' },
   { label: '4️⃣ สะดวกทุกเวลา',  text: 'สะดวกทุกเวลา' },
 ];
 
@@ -379,8 +381,16 @@ export function isLeadComplete(userId: string): boolean {
 // ─── Data extraction ──────────────────────────────────────────────────────────
 
 export function detectPhone(text: string): string | null {
-  const m = text.match(/0[689]\d[-\s]?\d{3,4}[-\s]?\d{3,4}/) ?? text.match(/0\d{9}/);
-  return m ? m[0].replace(/[-\s]/g, '') : null;
+  // "เบอร์ XXXXXXXXXX" or "โทร XXXXXXXXXX"
+  const prefixed = text.match(/(?:เบอร์|โทร)[.\s]*(\d[\d\s-]{8,11})/);
+  if (prefixed) return prefixed[1].replace(/[-\s]/g, '');
+  // Any Thai mobile: 06x-09x (all prefixes), with optional separators
+  const mobile = text.match(/0[2-9]\d[-\s]?\d{3,4}[-\s]?\d{3,4}/);
+  if (mobile) return mobile[0].replace(/[-\s]/g, '');
+  // Bare 10-digit starting with 0
+  const raw = text.match(/\b0\d{9}\b/);
+  if (raw) return raw[0];
+  return null;
 }
 
 export function extractFromText(text: string): Partial<ExtractedData> {
@@ -546,9 +556,9 @@ function buildPremiumQuoteFieldQuestion(field: LeadField, data: ExtractedData): 
 }
 
 const TIME_MAP: Record<string, string> = {
-  '1': 'ช่วงเช้า (09:00-12:00)',
-  '2': 'ช่วงบ่าย (13:00-17:00)',
-  '3': 'หลังเลิกงาน (18:00-21:00)',
+  '1': 'ช่วงเช้า 09:00-12:00',
+  '2': 'ช่วงบ่าย 13:00-17:00',
+  '3': 'หลังเลิกงาน 18:00-21:00',
   '4': 'สะดวกทุกเวลา',
 };
 
@@ -575,7 +585,7 @@ function buildHandoffFieldQuestion(field: LeadField): CaptureResponse {
       };
     case 'phone':
       return {
-        reply: '📞 รบกวนฝากเบอร์โทรที่สะดวกไว้ได้เลยครับ\n\n• 0812345678\n• 0899999999',
+        reply: '📞 รบกวนฝากเบอร์โทรที่สะดวกไว้ได้เลยครับ\n\nพิมพ์เป็นตัวเลข 10 หลักได้เลยครับ\nเช่น 08xxxxxxxx',
       };
     case 'preferred_contact_time':
       return {
@@ -612,7 +622,8 @@ function validateFieldInput(field: LeadField, text: string): boolean {
     case 'phone':
       return detectPhone(text) !== null || /\d{9,10}/.test(text.replace(/[-\s]/g, ''));
     case 'preferred_contact_time':
-      return text.trim().length >= 2;
+      // '1','2','3','4' are valid shortcuts — minimum length 1
+      return text.trim().length >= 1;
     default:
       return text.length > 0 && text.length < 200;
   }
@@ -650,7 +661,13 @@ function normalizeFieldValue(field: LeadField, text: string): string {
     return detectPhone(text) ?? text.replace(/[-\s]/g, '');
   }
   if (field === 'preferred_contact_time') {
-    return TIME_MAP[text.trim()] ?? text.trim();
+    const t = text.trim();
+    if (TIME_MAP[t]) return TIME_MAP[t];
+    if (t.includes('เช้า'))                              return TIME_MAP['1'];
+    if (t.includes('บ่าย'))                             return TIME_MAP['2'];
+    if (t.includes('เลิกงาน') || t.includes('เย็น'))   return TIME_MAP['3'];
+    if (t.includes('ทุกเวลา') || t.includes('ตลอด'))   return TIME_MAP['4'];
+    return t;
   }
   return text.trim();
 }
@@ -686,6 +703,7 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
   }
 
   if (!validateFieldInput(state.field, text)) {
+    console.log(`[Lead:field] field=${state.field} validation_failed text_len=${text.trim().length}`);
     return buildFieldQuestion(state.field, state.mode, userId);
   }
 
@@ -701,14 +719,14 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
       pendingQueue: remaining,
       pendingMode:  state.mode,
     });
-    console.log(`[Lead:field] parsed_field=${state.field} value=${value} next_state=awaiting_field:${next}`);
-    return buildFieldQuestion(next, state.mode, userId);
+    console.log(`[Lead:field] captured=${state.field} next_state=awaiting_field:${next} mode=${state.mode}`);
+    return { ...buildFieldQuestion(next, state.mode, userId), capturedField: state.field, nextState: `awaiting_field:${next}` };
   }
 
   awaitingField.delete(userId);
   saveStateMetadata(userId, { lastState: 'field_complete', pendingField: undefined });
-  console.log(`[Lead:field] parsed_field=${state.field} value=${value} next_state=field_complete mode=${state.mode}`);
-  return { reply: '', done: true, allCaptured: true, mode: state.mode };
+  console.log(`[Lead:field] captured=${state.field} next_state=field_complete mode=${state.mode}`);
+  return { reply: '', done: true, allCaptured: true, mode: state.mode, capturedField: state.field, nextState: 'field_complete' };
 }
 
 // ─── Interest → Category flow ─────────────────────────────────────────────────
@@ -827,7 +845,7 @@ export function buildHandoffSummary(data: ExtractedData): string {
   const f   = (v?: string) => v || '-';
   const bdg = data.budget ? `${Number(data.budget).toLocaleString('th-TH')} บาท/ปี` : '-';
   return [
-    '📋 สรุปข้อมูล',
+    '📋 สรุปข้อมูลสำหรับติดต่อกลับ',
     '',
     `👤 ชื่อ: ${f(data.real_name)}`,
     `🎂 อายุ: ${data.age ? data.age + ' ปี' : '-'}`,
@@ -835,9 +853,9 @@ export function buildHandoffSummary(data: ExtractedData): string {
     `📄 แผนที่สนใจ: ${f(data.product_interest)}`,
     `💰 งบประมาณ: ${bdg}`,
     `📞 เบอร์โทร: ${f(data.phone)}`,
-    `🕒 เวลาสะดวกติดต่อกลับ: ${f(data.preferred_contact_time)}`,
+    `🕒 เวลาสะดวก: ${f(data.preferred_contact_time)}`,
     '',
-    'ผมจะส่งต่อให้คุณจิราวัฒน์ติดต่อกลับโดยเร็วที่สุดครับ 🙏',
+    'ผมจะส่งต่อให้คุณจิราวัฒน์ติดต่อกลับตามเวลาที่สะดวกครับ 😊',
   ].join('\n');
 }
 
