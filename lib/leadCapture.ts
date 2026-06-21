@@ -14,6 +14,8 @@ export interface ExtractedData {
   preferred_contact_time?: string;
 }
 
+export type LeadField = keyof ExtractedData;
+
 export interface QuickReplyOption {
   label: string;
   text: string;
@@ -28,13 +30,27 @@ export interface CaptureResponse {
   cancelled?: boolean;
 }
 
+// ─── Field labels (Thai) ──────────────────────────────────────────────────────
+
+export const FIELD_LABELS: Record<LeadField, string> = {
+  real_name:              'ชื่อ',
+  age:                    'อายุ',
+  gender:                 'เพศ',
+  phone:                  'เบอร์โทร',
+  monthly_income:         'รายได้',
+  purchase_objective:     'เป้าหมาย',
+  product_interest:       'แผนที่สนใจ',
+  budget:                 'งบประมาณ',
+  preferred_contact_time: 'เวลาสะดวก',
+};
+
 // ─── Quick reply sets ─────────────────────────────────────────────────────────
 
 export const QR_GOALS: QuickReplyOption[] = [
-  { label: '1️⃣ ลดหย่อนภาษี',    text: 'ลดหย่อนภาษี' },
-  { label: '2️⃣ ประกันสุขภาพ',    text: 'ประกันสุขภาพ' },
-  { label: '3️⃣ ประกันมะเร็ง',     text: 'ประกันมะเร็ง' },
-  { label: '4️⃣ ลงทุนระยะยาว',    text: 'ลงทุนระยะยาว' },
+  { label: '1️⃣ ลดหย่อนภาษี',  text: 'ลดหย่อนภาษี' },
+  { label: '2️⃣ สุขภาพ',        text: 'ประกันสุขภาพ' },
+  { label: '3️⃣ มะเร็ง',        text: 'ประกันมะเร็ง' },
+  { label: '4️⃣ ลงทุน',         text: 'ลงทุนระยะยาว' },
 ];
 
 export const QR_PRODUCTS: QuickReplyOption[] = [
@@ -52,72 +68,55 @@ export const QR_GENDER: QuickReplyOption[] = [
 ];
 
 export const QR_AGE: QuickReplyOption[] = [
-  { label: 'ต่ำกว่า 30 ปี', text: 'ต่ำกว่า 30' },
-  { label: '30–39 ปี',       text: '30-39' },
-  { label: '40–49 ปี',       text: '40-49' },
-  { label: '50 ปีขึ้นไป',    text: '50+' },
+  { label: 'น้อยกว่า 30 ปี', text: 'ต่ำกว่า 30' },
+  { label: '30–39 ปี',        text: '30-39' },
+  { label: '40–49 ปี',        text: '40-49' },
+  { label: '50 ปีขึ้นไป',     text: '50+' },
 ];
 
-// ─── Lead field type & labels ─────────────────────────────────────────────────
-
-export type LeadField = keyof ExtractedData;
-
-export const FIELD_LABELS: Record<LeadField, string> = {
-  real_name:              'ชื่อ',
-  age:                    'อายุ',
-  gender:                 'เพศ',
-  phone:                  'เบอร์โทร',
-  monthly_income:         'รายได้',
-  purchase_objective:     'เป้าหมาย',
-  product_interest:       'แผนที่สนใจ',
-  budget:                 'งบประมาณ',
-  preferred_contact_time: 'เวลาสะดวก',
-};
+// 6 Insurance Category Quick Reply (for interest trigger)
+export const QR_INSURANCE_CATEGORIES: QuickReplyOption[] = [
+  { label: '1️⃣ สะสมทรัพย์',   text: 'ประกันชีวิตสะสมทรัพย์' },
+  { label: '2️⃣ ลดหย่อนภาษี',  text: 'ประกันลดหย่อนภาษี' },
+  { label: '3️⃣ เกษียณ',        text: 'ประกันเกษียณ' },
+  { label: '4️⃣ สุขภาพ',        text: 'ประกันสุขภาพ' },
+  { label: '5️⃣ โรคมะเร็ง',     text: 'ประกันมะเร็งและโรคร้ายแรง' },
+  { label: '6️⃣ Unit Linked',   text: 'ประกันควบการลงทุน Unit Linked' },
+];
 
 // ─── Trigger keyword groups ───────────────────────────────────────────────────
 
-// Contact triggers → need phone number
+// Contact triggers → need phone
 export const CONTACT_TRIGGERS = [
-  'ติดต่อคุณจิราวัฒน์',
-  'ขอใบเสนอราคา',
-  'สนใจสมัคร',
-  'ขอนัดคุย',
-  'ขอรายละเอียด',
-  'ให้ติดต่อกลับ',
-  'ติดต่อกลับ',
-  'นัดคุย',
+  'ติดต่อคุณจิราวัฒน์', 'ขอใบเสนอราคา', 'สนใจสมัคร',
+  'ขอนัดคุย', 'ขอรายละเอียด', 'ให้ติดต่อกลับ', 'ติดต่อกลับ', 'นัดคุย',
 ];
 
-// Quote triggers → need age + gender + product_interest (NOT phone)
+// Quote triggers → need age + gender + product (NOT phone)
 export const QUOTE_TRIGGERS = [
-  'เช็กเบี้ย',
-  'คำนวณเบี้ย',
-  'เบี้ยประกัน',
-  'ดูเบี้ย',
+  'เช็กเบี้ย', 'คำนวณเบี้ย', 'เบี้ยประกัน', 'ดูเบี้ย',
 ];
 
-// Minimum required for premium quote
-export const QUOTE_REQUIRED_FIELDS: LeadField[] = [
-  'age', 'gender', 'product_interest',
+// Interest triggers → show 6-category Quick Reply immediately
+export const INTEREST_TRIGGERS = [
+  'สนใจทำประกัน', 'อยากทำประกัน', 'แนะนำประกัน', 'ประกันอะไรดี',
+  'สนใจประกัน', 'อยากได้ประกัน',
 ];
 
-// Fields scored for lead completeness (each = 1 point, max 5/5)
-export const SCORED_FIELDS: LeadField[] = [
-  'age', 'gender', 'phone', 'product_interest', 'budget',
-];
+export const QUOTE_REQUIRED_FIELDS: LeadField[] = ['age', 'gender', 'product_interest'];
+export const SCORED_FIELDS: LeadField[] = ['age', 'gender', 'phone', 'product_interest', 'budget'];
 
-const TIMEOUT_MS = 30 * 60 * 1000;
+const TIMEOUT_MS      = 30 * 60 * 1000;
 const CANCEL_KEYWORDS = ['ยกเลิก', 'cancel', 'หยุด', 'ออก'];
-
-// All intent triggers — used to detect intent switches mid-flow
-const ALL_INTENT_TRIGGERS = [...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS];
+const ALL_INTENT_TRIGGERS = [...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS, ...INTEREST_TRIGGERS];
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
-const userLeadData  = new Map<string, ExtractedData>();
-const awaitingPhone = new Map<string, { startedAt: number }>();
-const awaitingGoal  = new Map<string, { startedAt: number }>();
-const awaitingField = new Map<string, {
+const userLeadData    = new Map<string, ExtractedData>();
+const awaitingPhone   = new Map<string, { startedAt: number }>();
+const awaitingGoal    = new Map<string, { startedAt: number }>();
+const awaitingCategory= new Map<string, { startedAt: number }>();
+const awaitingField   = new Map<string, {
   field: LeadField;
   queue: LeadField[];
   startedAt: number;
@@ -125,6 +124,12 @@ const awaitingField = new Map<string, {
 
 function alive(entry: { startedAt: number }): boolean {
   return Date.now() - entry.startedAt < TIMEOUT_MS;
+}
+
+// ─── Normalizer ───────────────────────────────────────────────────────────────
+
+function normTH(s: string): string {
+  return s.normalize('NFC').toLowerCase();
 }
 
 // ─── State introspection ──────────────────────────────────────────────────────
@@ -150,48 +155,43 @@ export function isAwaitingGoal(userId: string): boolean {
   return true;
 }
 
+export function isAwaitingCategory(userId: string): boolean {
+  const e = awaitingCategory.get(userId);
+  if (!e) return false;
+  if (!alive(e)) { awaitingCategory.delete(userId); return false; }
+  return true;
+}
+
 export function getCurrentState(userId: string): string {
-  if (isAwaitingField(userId)) return 'awaiting_field';
-  if (isAwaitingGoal(userId))  return 'awaiting_goal';
-  if (isAwaitingPhone(userId)) return 'awaiting_phone';
+  if (isAwaitingField(userId))    return 'awaiting_field';
+  if (isAwaitingCategory(userId)) return 'awaiting_category';
+  if (isAwaitingGoal(userId))     return 'awaiting_goal';
+  if (isAwaitingPhone(userId))    return 'awaiting_phone';
   return 'idle';
 }
 
 // ─── State management ─────────────────────────────────────────────────────────
 
-export function cancelFieldCapture(userId: string): void {
-  awaitingField.delete(userId);
-}
-
-export function cancelAwaitingPhone(userId: string): void {
-  awaitingPhone.delete(userId);
-}
+export function cancelFieldCapture(userId: string): void   { awaitingField.delete(userId); }
+export function cancelAwaitingPhone(userId: string): void  { awaitingPhone.delete(userId); }
 
 export function cancelAllCapture(userId: string): void {
   awaitingField.delete(userId);
   awaitingPhone.delete(userId);
   awaitingGoal.delete(userId);
+  awaitingCategory.delete(userId);
 }
 
-export function clearLeadData(userId: string): void {
-  userLeadData.delete(userId);
-}
+export function clearLeadData(userId: string): void { userLeadData.delete(userId); }
 
 // ─── Lead completeness ────────────────────────────────────────────────────────
 
-export function getMissingFields(
-  userId: string,
-  required: LeadField[]
-): LeadField[] {
+export function getMissingFields(userId: string, required: LeadField[]): LeadField[] {
   const data = userLeadData.get(userId) ?? {};
   return required.filter((f) => !data[f]);
 }
 
-export function getLeadCompleteness(userId: string): {
-  score: number;
-  total: number;
-  missing: LeadField[];
-} {
+export function getLeadCompleteness(userId: string): { score: number; total: number; missing: LeadField[] } {
   const missing = getMissingFields(userId, SCORED_FIELDS);
   return { score: SCORED_FIELDS.length - missing.length, total: SCORED_FIELDS.length, missing };
 }
@@ -203,8 +203,7 @@ export function isLeadComplete(userId: string): boolean {
 // ─── Data extraction ──────────────────────────────────────────────────────────
 
 export function detectPhone(text: string): string | null {
-  const m = text.match(/0[689]\d[-\s]?\d{3,4}[-\s]?\d{3,4}/) ??
-            text.match(/0\d{9}/);
+  const m = text.match(/0[689]\d[-\s]?\d{3,4}[-\s]?\d{3,4}/) ?? text.match(/0\d{9}/);
   return m ? m[0].replace(/[-\s]/g, '') : null;
 }
 
@@ -252,10 +251,6 @@ export function hasPhone(userId: string): boolean {
 
 // ─── Trigger checks ───────────────────────────────────────────────────────────
 
-function normTH(s: string): string {
-  return s.normalize('NFC').toLowerCase();
-}
-
 export function isContactTrigger(text: string): boolean {
   const n = normTH(text);
   return CONTACT_TRIGGERS.some((kw) => n.includes(normTH(kw)));
@@ -266,12 +261,17 @@ export function isQuoteTrigger(text: string): boolean {
   return QUOTE_TRIGGERS.some((kw) => n.includes(normTH(kw)));
 }
 
+export function isInterestTrigger(text: string): boolean {
+  const n = normTH(text);
+  return INTEREST_TRIGGERS.some((kw) => n.includes(normTH(kw)));
+}
+
 export function isAnyTrigger(text: string): boolean {
   const n = normTH(text);
   return ALL_INTENT_TRIGGERS.some((kw) => n.includes(normTH(kw)));
 }
 
-// ─── Existing data summary (shown before asking missing fields) ───────────────
+// ─── Existing data summary ────────────────────────────────────────────────────
 
 export function buildExistingDataSummary(data: ExtractedData): string {
   const lines: string[] = [];
@@ -288,18 +288,15 @@ export function buildExistingDataSummary(data: ExtractedData): string {
 function buildFieldQuestion(field: LeadField): CaptureResponse {
   switch (field) {
     case 'age':
-      return { reply: 'ขอทราบอายุประมาณเท่าไรครับ?', quickReply: QR_AGE };
+      return { reply: '😊 ขอทราบอายุด้วยครับ\n\nประมาณกี่ปีครับ?', quickReply: QR_AGE };
     case 'gender':
-      return { reply: 'กรุณาเลือกเพศครับ', quickReply: QR_GENDER };
+      return { reply: '😊 ขอทราบเพศด้วยครับ', quickReply: QR_GENDER };
     case 'product_interest':
-      return {
-        reply: 'สนใจแผนไหนครับ?\n\n1. Tokyo SuperTax\n2. Good Health Prime\n3. Tokio Cancer Care\n4. Tokyo Beyond',
-        quickReply: QR_PRODUCTS,
-      };
+      return { reply: '😊 สนใจแผนไหนครับ?', quickReply: QR_INSURANCE_CATEGORIES };
     case 'phone':
-      return { reply: 'ขอเบอร์ที่สะดวกรับสายด้วยครับ 😊' };
+      return { reply: '😊 ขอเบอร์ที่สะดวกรับสายด้วยครับ' };
     case 'budget':
-      return { reply: 'งบประมาณที่วางแผนไว้ประมาณเท่าไรครับ?\nเช่น 3,000/เดือน หรือ 50,000/ปี' };
+      return { reply: '😊 งบประมาณต่อปีประมาณเท่าไรครับ?\n\nเช่น 20,000 / 50,000 บาท/ปี' };
     default:
       return { reply: '' };
   }
@@ -311,19 +308,18 @@ function validateFieldInput(field: LeadField, text: string): boolean {
       return /\d/.test(text) || ['ต่ำกว่า 30', '30-39', '40-49', '50+'].some((r) => text.includes(r));
     case 'gender':
       return text.includes('ชาย') || text.includes('หญิง') || text.includes('ไม่ระบุ');
-    case 'product_interest':
-      return text.length > 0 && text.length < 100;
     default:
-      return text.length > 0;
+      return text.length > 0 && text.length < 200;
   }
 }
 
 const PRODUCT_MAP: Record<string, string> = {
-  '1': 'Tokyo SuperTax',
-  '2': 'Good Health Prime',
-  '3': 'Tokio Cancer Care',
-  '4': 'Tokyo Beyond',
-  '5': 'ยังไม่แน่ใจ',
+  '1': 'ประกันชีวิตสะสมทรัพย์',
+  '2': 'ประกันลดหย่อนภาษี',
+  '3': 'ประกันเกษียณ',
+  '4': 'ประกันสุขภาพ',
+  '5': 'ประกันมะเร็งและโรคร้ายแรง',
+  '6': 'ประกันควบการลงทุน Unit Linked',
 };
 
 function normalizeFieldValue(field: LeadField, text: string): string {
@@ -336,26 +332,26 @@ function normalizeFieldValue(field: LeadField, text: string): string {
   if (field === 'age') {
     const m = text.match(/\d{1,3}/);
     if (m) return m[0];
-    // QR labels like "ต่ำกว่า 30", "30-39"
     return text.replace('ปี', '').trim();
   }
   return text.trim();
 }
 
+// intro: optional preamble merged into first question (keeps replyToken used only ONCE)
 export function startFieldCapture(
   userId: string,
-  missingFields: LeadField[]
+  missingFields: LeadField[],
+  intro?: string
 ): CaptureResponse {
   if (missingFields.length === 0) return { reply: '', done: true };
   const [first, ...rest] = missingFields;
   awaitingField.set(userId, { field: first, queue: rest, startedAt: Date.now() });
-  return buildFieldQuestion(first);
+  const q = buildFieldQuestion(first);
+  const reply = intro ? `${intro}\n\n${q.reply}` : q.reply;
+  return { ...q, reply };
 }
 
-export function handleFieldCapture(
-  userId: string,
-  text: string
-): CaptureResponse {
+export function handleFieldCapture(userId: string, text: string): CaptureResponse {
   const state = awaitingField.get(userId);
   if (!state) return { reply: '', done: true };
 
@@ -364,9 +360,8 @@ export function handleFieldCapture(
     return { reply: 'รับทราบครับ 😊', cancelled: true, done: true };
   }
 
-  // Invalid input — re-ask the same question
   if (!validateFieldInput(state.field, text)) {
-    return buildFieldQuestion(state.field);
+    return buildFieldQuestion(state.field); // re-ask same question
   }
 
   const value = normalizeFieldValue(state.field, text);
@@ -382,11 +377,32 @@ export function handleFieldCapture(
   return { reply: '', done: true, allCaptured: true };
 }
 
+// ─── Interest → Category flow ─────────────────────────────────────────────────
+
+export function startCategoryFlow(userId: string): CaptureResponse {
+  awaitingCategory.set(userId, { startedAt: Date.now() });
+  return {
+    reply: '😊 ยินดีให้คำแนะนำครับ\n\nสนใจแผนไหนเป็นพิเศษครับ?',
+    quickReply: QR_INSURANCE_CATEGORIES,
+  };
+}
+
+export function handleCategoryAwait(userId: string, text: string): CaptureResponse {
+  if (CANCEL_KEYWORDS.some((kw) => text.includes(kw))) {
+    awaitingCategory.delete(userId);
+    return { reply: 'รับทราบครับ 😊', cancelled: true };
+  }
+  awaitingCategory.delete(userId);
+  const category = PRODUCT_MAP[text.trim()] ?? text.trim();
+  accumulateLeadData(userId, { product_interest: category });
+  return { reply: '' }; // caller builds next step
+}
+
 // ─── Phone → Goal flow ────────────────────────────────────────────────────────
 
 export function startPhoneAwait(userId: string): CaptureResponse {
   awaitingPhone.set(userId, { startedAt: Date.now() });
-  return { reply: 'ขอเบอร์ที่สะดวกรับสายด้วยครับ 😊' };
+  return { reply: '😊 ขอเบอร์ที่สะดวกรับสายด้วยครับ' };
 }
 
 export function handlePhoneAwait(userId: string, text: string): CaptureResponse {
@@ -397,54 +413,35 @@ export function handlePhoneAwait(userId: string, text: string): CaptureResponse 
       cancelled: true,
     };
   }
-
   const phone = detectPhone(text);
   if (!phone) return { reply: '' };
 
   awaitingPhone.delete(userId);
   accumulateLeadData(userId, { phone });
-
   awaitingGoal.set(userId, { startedAt: Date.now() });
   return {
     phoneCaptured: phone,
-    reply:
-      'ขอบคุณครับ 🙏\n\n' +
-      'สนใจวางแผนเรื่องไหนครับ?\n\n' +
-      '1️⃣ ลดหย่อนภาษี\n' +
-      '2️⃣ ประกันสุขภาพ\n' +
-      '3️⃣ ประกันมะเร็ง\n' +
-      '4️⃣ ลงทุนระยะยาว',
+    reply: 'ขอบคุณครับ 🙏\n\nสนใจวางแผนเรื่องไหนครับ?',
     quickReply: QR_GOALS,
   };
 }
 
 const GOAL_MAP: Record<string, string> = {
-  '1': 'ลดหย่อนภาษี',
-  '2': 'ประกันสุขภาพ',
-  '3': 'ประกันมะเร็ง',
-  '4': 'ลงทุนระยะยาว',
+  '1': 'ลดหย่อนภาษี', '2': 'ประกันสุขภาพ',
+  '3': 'ประกันมะเร็ง', '4': 'ลงทุนระยะยาว',
 };
 
-export function handleGoalAwait(
-  userId: string,
-  text: string,
-  displayName: string
-): CaptureResponse {
+export function handleGoalAwait(userId: string, text: string, displayName: string): CaptureResponse {
   if (CANCEL_KEYWORDS.some((kw) => text.includes(kw))) {
     awaitingGoal.delete(userId);
     return { reply: 'รับทราบครับ 😊', cancelled: true, done: true };
   }
-
   const goal = GOAL_MAP[text.trim()] ?? text.trim();
   accumulateLeadData(userId, { purchase_objective: goal });
   awaitingGoal.delete(userId);
-
   const data = getLeadData(userId);
   const { score, total } = getLeadCompleteness(userId);
-  return {
-    reply: buildSummary(displayName, data, score, total),
-    done: true,
-  };
+  return { reply: buildSummary(displayName, data, score, total), done: true };
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
@@ -455,24 +452,20 @@ export function buildSummary(
   score?: number,
   total?: number
 ): string {
-  const f = (v?: string) => v || '-';
-  const income = data.monthly_income
-    ? `${Number(data.monthly_income).toLocaleString('th-TH')} บาท/เดือน`
-    : '-';
-  const budget = data.budget
-    ? `${Number(data.budget).toLocaleString('th-TH')} บาท`
-    : '-';
-  const scoreStr = score !== undefined ? ` (${score}/${total})` : '';
+  const f   = (v?: string) => v || '-';
+  const inc = data.monthly_income ? `${Number(data.monthly_income).toLocaleString('th-TH')} บาท/เดือน` : '-';
+  const bdg = data.budget         ? `${Number(data.budget).toLocaleString('th-TH')} บาท` : '-';
+  const sc  = score !== undefined ? ` (${score}/${total})` : '';
 
   return (
-    `📋 สรุปข้อมูล${scoreStr}\n\n` +
+    `📋 สรุปข้อมูล${sc}\n\n` +
     `👤 ชื่อ: ${f(displayName || data.real_name)}\n` +
     `🎂 อายุ: ${f(data.age)}\n` +
     `⚧ เพศ: ${f(data.gender)}\n` +
-    `💰 รายได้: ${income}\n` +
+    `💰 รายได้: ${inc}\n` +
     `🎯 เป้าหมาย: ${f(data.purchase_objective)}\n` +
     `📄 แผนที่สนใจ: ${f(data.product_interest)}\n` +
-    `💵 งบประมาณ: ${budget}\n` +
+    `💵 งบประมาณ: ${bdg}\n` +
     `📞 เบอร์โทร: ${f(data.phone)}\n` +
     `🕒 เวลาสะดวก: ${f(data.preferred_contact_time)}\n\n` +
     'คุณจิราวัฒน์จะติดต่อกลับเร็วๆ นี้ครับ 🙏'
@@ -481,27 +474,15 @@ export function buildSummary(
 
 // ─── Lead payload ─────────────────────────────────────────────────────────────
 
-export function buildLeadPayload(
-  userId: string,
-  displayName: string,
-  data: ExtractedData
-): LeadUpsert {
+export function buildLeadPayload(userId: string, displayName: string, data: ExtractedData): LeadUpsert {
   const today = new Date().toISOString().split('T')[0];
   return {
-    line_user_id: userId,
-    display_name: displayName,
-    real_name: data.real_name ?? '',
-    age: data.age ?? '',
-    gender: data.gender ?? '',
-    phone: data.phone ?? '',
-    monthly_income: data.monthly_income ?? '',
-    purchase_objective: data.purchase_objective ?? '',
-    product_interest: data.product_interest ?? '',
-    budget: data.budget ?? '',
-    preferred_contact_time: data.preferred_contact_time ?? '',
-    lead_status: 'qualified',
-    follow_up_status: 'pending',
-    last_contact_date: today,
-    first_contact_date: today,
+    line_user_id: userId, display_name: displayName,
+    real_name: data.real_name ?? '', age: data.age ?? '', gender: data.gender ?? '',
+    phone: data.phone ?? '', monthly_income: data.monthly_income ?? '',
+    purchase_objective: data.purchase_objective ?? '', product_interest: data.product_interest ?? '',
+    budget: data.budget ?? '', preferred_contact_time: data.preferred_contact_time ?? '',
+    lead_status: 'qualified', follow_up_status: 'pending',
+    last_contact_date: today, first_contact_date: today,
   };
 }
