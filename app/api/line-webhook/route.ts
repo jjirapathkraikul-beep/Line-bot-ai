@@ -93,17 +93,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
       const reply = await getChatReply(userId, systemPrompt, userMessage);
 
+      // LINE reply first — user sees it immediately regardless of CRM
       try {
         await client.replyMessage(replyToken, { type: 'text', text: reply });
       } catch (err) {
         console.error('[Webhook] LINE reply failed:', err);
       }
 
-      // Update CRM — fire and forget, never block the reply
-      upsertLead({
+      // CRM save — runs after reply so it never blocks the user.
+      // Awaited so the serverless function stays alive (not killed after response).
+      await upsertLead({
         line_user_id: userId,
         last_question: userMessage.substring(0, 500),
-      }).catch(() => {});
+        lead_status: 'new',
+        interest: 'ประกันชีวิต',
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Webhook] CRM unexpected throw: ${msg}`);
+      });
     })
   );
 
