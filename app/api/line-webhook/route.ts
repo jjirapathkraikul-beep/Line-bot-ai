@@ -6,12 +6,15 @@ import { buildSystemPrompt } from '@/lib/prompt';
 import { getChatReply } from '@/lib/openai';
 import { upsertLead } from '@/lib/lead';
 import {
-  shouldStartCapture,
-  isCapturing,
-  startCapture,
-  handleCapture,
-  cancelCapture,
-  buildLeadFromCapture,
+  extractFromText,
+  accumulateLeadData,
+  getLeadData,
+  hasPhone,
+  isHandoffTrigger,
+  isAwaitingPhone,
+  startPhoneAwait,
+  handlePhoneAwait,
+  buildLeadPayload,
 } from '@/lib/leadCapture';
 
 export const dynamic = 'force-dynamic';
@@ -19,8 +22,10 @@ export const maxDuration = 30;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
-
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+// Cache display names to avoid repeated LINE Profile API calls
+const displayNameCache = new Map<string, string>();
 
 function isRateLimited(userId: string): boolean {
   const now = Date.now();
@@ -39,6 +44,17 @@ function getLineClient(): Client {
     channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN!,
     channelSecret: process.env.LINE_CHANNEL_SECRET!,
   });
+}
+
+async function getDisplayName(client: Client, userId: string): Promise<string> {
+  if (displayNameCache.has(userId)) return displayNameCache.get(userId)!;
+  try {
+    const profile = await client.getProfile(userId);
+    displayNameCache.set(userId, profile.displayName);
+    return profile.displayName;
+  } catch {
+    return '';
+  }
 }
 
 async function replyText(client: Client, replyToken: string, text: string): Promise<void> {
@@ -93,50 +109,65 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── Lead Capture: mid-flow ────────────────────────────────────────────
-      if (isCapturing(userId)) {
-        const result = handleCapture(userId, userMessage);
+      // ── 1. Extract data passively from every message ─────────────────────
+      const extracted = extractFromText(userMessage);
+      accumulateLeadData(userId, extracted);
 
-        if (result.reply) {
+      // ── 2. Get display name (cached) ──────────────────────────────────────
+      const displayName = await getDisplayName(client, userId);
+      if (displayName) accumulateLeadData(userId, {});
+
+      // ── 3. Phone capture: awaiting phone from previous handoff ────────────
+      if (isAwaitingPhone(userId)) {
+        const result = handlePhoneAwait(userId, userMessage, displayName);
+
+        if (result.handled) {
           await replyText(client, replyToken, result.reply);
-        }
 
-        if (result.done && !result.cancelled && result.leadData) {
-          const leadPayload = buildLeadFromCapture(userId, result.leadData);
-          await upsertLead(leadPayload).catch((err: unknown) => {
-            console.error('[Webhook] CRM save after capture failed:', err);
-          });
+          if (result.phoneCaptured) {
+            const leadData = getLeadData(userId);
+            const leadPayload = buildLeadPayload(userId, displayName, leadData);
+            await upsertLead({
+              ...leadPayload,
+              last_question: userMessage.substring(0, 300),
+            }).catch((err: unknown) => {
+              console.error('[Webhook] CRM save after phone capture failed:', err);
+            });
+          }
+          return;
         }
-        return;
+        // Phone not detected — fall through to OpenAI (bot will naturally re-ask)
       }
 
-      // ── Lead Capture: trigger keyword detected ────────────────────────────
-      if (shouldStartCapture(userMessage)) {
-        const welcomeMsg = startCapture(userId);
-        await replyText(client, replyToken, welcomeMsg);
+      // ── 4. Handoff trigger: ask for phone if not yet captured ─────────────
+      if (isHandoffTrigger(userMessage) && !hasPhone(userId)) {
+        const msg = startPhoneAwait(userId);
+        await replyText(client, replyToken, msg);
         await upsertLead({
           line_user_id: userId,
+          display_name: displayName,
           last_question: userMessage.substring(0, 300),
           lead_status: 'interested',
-          follow_up_status: 'capture_started',
+          follow_up_status: 'awaiting_phone',
         }).catch(() => {});
         return;
       }
 
-      // ── Normal flow: OpenAI ───────────────────────────────────────────────
+      // ── 5. Normal OpenAI flow ──────────────────────────────────────────────
       const faqs = await fetchFaq();
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
       const reply = await getChatReply(userId, systemPrompt, userMessage);
 
-      // LINE reply first — user sees it immediately
       await replyText(client, replyToken, reply);
 
-      // CRM save after reply — function stays alive (awaited)
+      // Save partial CRM data after each message
+      const currentData = getLeadData(userId);
       await upsertLead({
         line_user_id: userId,
+        display_name: displayName,
+        ...currentData,
         last_question: userMessage.substring(0, 300),
-        lead_status: 'new',
-        purchase_objective: 'สอบถามทั่วไป',
+        lead_status: hasPhone(userId) ? 'qualified' : 'new',
       }).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Webhook] CRM save failed: ${msg}`);

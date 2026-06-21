@@ -1,225 +1,202 @@
 import type { LeadUpsert } from '@/types/faq';
 
-type CaptureStep =
-  | 'name' | 'age' | 'gender' | 'phone'
-  | 'objective' | 'product' | 'budget' | 'contact_time'
-  | 'done';
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface CaptureData {
+export interface ExtractedData {
   real_name?: string;
   age?: string;
   gender?: string;
   phone?: string;
+  monthly_income?: string;
   purchase_objective?: string;
   product_interest?: string;
   budget?: string;
   preferred_contact_time?: string;
 }
 
-interface CaptureState {
-  step: CaptureStep;
-  data: CaptureData;
-  startedAt: number;
-}
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-const CAPTURE_TIMEOUT_MS = 30 * 60 * 1000; // 30 min session
-const captureMap = new Map<string, CaptureState>();
+const PHONE_AWAIT_TIMEOUT_MS = 30 * 60 * 1000;
 
-const TRIGGER_KEYWORDS = [
+export const HANDOFF_TRIGGERS = [
   'ติดต่อคุณจิราวัฒน์',
   'ขอใบเสนอราคา',
   'สนใจสมัคร',
   'เช็กเบี้ย',
   'ขอนัดคุย',
+  'ขอรายละเอียด',
+  'ให้ติดต่อกลับ',
+  'ติดต่อกลับ',
+  'นัดคุย',
 ];
 
-const SKIP_KEYWORDS = ['ข้าม', 'ไม่สะดวก', 'ไม่บอก', 'skip', 'ไม่ระบุ', 'ไม่ทราบ', 'ไม่แจ้ง'];
-const CANCEL_KEYWORDS = ['ยกเลิก', 'cancel', 'หยุด', 'ออก', 'เลิก'];
+const CANCEL_KEYWORDS = ['ยกเลิก', 'cancel', 'หยุด', 'ออก'];
 
-const OBJECTIVE_MAP: Record<string, string> = {
-  '1': 'ลดหย่อนภาษี',
-  '2': 'ประกันสุขภาพ',
-  '3': 'มะเร็ง/โรคร้ายแรง',
-  '4': 'วางแผนเกษียณ',
-  '5': 'ลงทุนระยะยาว',
-  '6': 'คุ้มครองครอบครัว',
-};
+// ─── Per-user in-memory state ─────────────────────────────────────────────────
 
-const PRODUCT_MAP: Record<string, string> = {
-  '1': 'Tokyo SuperTax',
-  '2': 'Good Health Prime',
-  '3': 'Tokio Cancer Care',
-  '4': 'Tokyo Beyond',
-  '5': 'ยังไม่แน่ใจ อยากให้แนะนำ',
-};
+// Accumulated data extracted from conversation
+const userLeadData = new Map<string, ExtractedData>();
 
-export function shouldStartCapture(text: string): boolean {
-  return TRIGGER_KEYWORDS.some((kw) => text.includes(kw));
+// Users currently waiting to provide phone number
+const awaitingPhone = new Map<string, { startedAt: number }>();
+
+// ─── Extraction ───────────────────────────────────────────────────────────────
+
+export function detectPhone(text: string): string | null {
+  const m = text.match(/0[689]\d[-\s]?\d{3,4}[-\s]?\d{3,4}/) ??
+            text.match(/0\d{9}/);
+  return m ? m[0].replace(/[-\s]/g, '') : null;
 }
 
-function isExpired(state: CaptureState): boolean {
-  return Date.now() - state.startedAt > CAPTURE_TIMEOUT_MS;
+export function extractFromText(text: string): Partial<ExtractedData> {
+  const result: Partial<ExtractedData> = {};
+
+  // Age: "อายุ 39" or "39 ปี"
+  const ageM = text.match(/อายุ\s*(\d{1,3})/) ?? text.match(/(\d{1,3})\s*ปี\b/);
+  if (ageM) result.age = ageM[1];
+
+  // Monthly income
+  const incomeM = text.match(/รายได้\s*([\d,]+)/) ?? text.match(/เงินเดือน\s*([\d,]+)/);
+  if (incomeM) result.monthly_income = incomeM[1].replace(/,/g, '');
+
+  // Budget: "งบประมาณ 5000", "งบ 5000", "5000 บาท/เดือน"
+  const budgetM = text.match(/งบประมาณ\s*([\d,]+)/) ??
+                  text.match(/งบ\s+([\d,]+)/) ??
+                  text.match(/([\d,]+)\s*บาท\/(?:เดือน|ปี)/);
+  if (budgetM) result.budget = budgetM[1].replace(/,/g, '');
+
+  // Purchase objective: capture text after "เป้าหมาย" until next keyword or end
+  const objM = text.match(/เป้าหมาย([฀-๿\d\s/]+?)(?=\s*(?:งบประมาณ|งบ\s|รายได้|อายุ|เงินเดือน|$))/);
+  if (objM) result.purchase_objective = `เป้าหมาย${objM[1].trim()}`.replace(/\s+/g, ' ');
+
+  // Gender
+  if (/\bชาย\b/.test(text)) result.gender = 'ชาย';
+  else if (/\bหญิง\b/.test(text)) result.gender = 'หญิง';
+
+  // Phone
+  const phone = detectPhone(text);
+  if (phone) result.phone = phone;
+
+  return result;
 }
 
-export function isCapturing(userId: string): boolean {
-  const state = captureMap.get(userId);
-  if (!state) return false;
-  if (isExpired(state) || state.step === 'done') {
-    captureMap.delete(userId);
+// ─── Accumulated data per user ────────────────────────────────────────────────
+
+export function accumulateLeadData(userId: string, incoming: Partial<ExtractedData>): void {
+  const current = userLeadData.get(userId) ?? {};
+  for (const [k, v] of Object.entries(incoming)) {
+    if (v && v !== '') (current as Record<string, string>)[k] = v;
+  }
+  userLeadData.set(userId, current);
+}
+
+export function getLeadData(userId: string): ExtractedData {
+  return userLeadData.get(userId) ?? {};
+}
+
+export function hasPhone(userId: string): boolean {
+  return !!(userLeadData.get(userId)?.phone);
+}
+
+// ─── Handoff + phone capture flow ────────────────────────────────────────────
+
+export function isHandoffTrigger(text: string): boolean {
+  return HANDOFF_TRIGGERS.some((kw) => text.includes(kw));
+}
+
+export function isAwaitingPhone(userId: string): boolean {
+  const entry = awaitingPhone.get(userId);
+  if (!entry) return false;
+  if (Date.now() - entry.startedAt > PHONE_AWAIT_TIMEOUT_MS) {
+    awaitingPhone.delete(userId);
     return false;
   }
   return true;
 }
 
-export function cancelCapture(userId: string): void {
-  captureMap.delete(userId);
-}
-
-export function startCapture(userId: string): string {
-  captureMap.set(userId, { step: 'name', data: {}, startedAt: Date.now() });
+export function startPhoneAwait(userId: string): string {
+  awaitingPhone.set(userId, { startedAt: Date.now() });
   return (
-    'ยินดีครับ 😊 เพื่อให้คุณจิราวัฒน์ติดต่อกลับได้ตรงประเด็น\n' +
-    'ขอทราบชื่อของคุณลูกค้าก่อนได้เลยครับ\n\n' +
-    '(พิมพ์ "ข้าม" เพื่อข้ามคำถามนั้น หรือ "ยกเลิก" เพื่อออกจากขั้นตอนนี้ได้เลยครับ)'
+    'ได้เลยครับ 😊 เพื่อให้คุณจิราวัฒน์ติดต่อกลับและแนะนำได้ตรงที่สุด\n' +
+    'รบกวนฝากเบอร์โทรที่สะดวกไว้ได้ไหมครับ?'
   );
 }
 
-export interface CaptureResult {
-  reply: string;
-  done: boolean;
-  cancelled?: boolean;
-  leadData?: CaptureData;
+export function clearPhoneAwait(userId: string): void {
+  awaitingPhone.delete(userId);
 }
 
-export function handleCapture(userId: string, text: string): CaptureResult {
-  const state = captureMap.get(userId);
-  if (!state) return { reply: '', done: true };
-
+// Returns { handled, reply } — if handled=true, route.ts should skip OpenAI
+export function handlePhoneAwait(
+  userId: string,
+  text: string,
+  displayName: string
+): { handled: boolean; reply: string; phoneCaptured?: string } {
   const trimmed = text.trim();
 
-  // Cancel flow
+  // Cancel
   if (CANCEL_KEYWORDS.some((kw) => trimmed.includes(kw))) {
-    captureMap.delete(userId);
+    clearPhoneAwait(userId);
     return {
-      reply: 'รับทราบครับ ยกเลิกขั้นตอนแล้ว\nหากต้องการนัดคุยหรือขอใบเสนอราคาในภายหลัง พิมพ์ "ติดต่อคุณจิราวัฒน์" ได้เลยครับ 😊',
-      done: true,
-      cancelled: true,
+      handled: true,
+      reply: 'รับทราบครับ หากต้องการติดต่อในภายหลัง พิมพ์ "ติดต่อคุณจิราวัฒน์" ได้เลยครับ 😊',
     };
   }
 
-  const skip = SKIP_KEYWORDS.some((kw) => trimmed.toLowerCase().includes(kw));
-  const answer = skip ? '' : trimmed;
-
-  switch (state.step) {
-    case 'name': {
-      state.data.real_name = answer;
-      state.step = 'age';
-      const greeting = answer ? `ขอบคุณครับคุณ${answer}\n` : '';
-      return { reply: `${greeting}ขอทราบอายุประมาณเท่าไรครับ?`, done: false };
-    }
-
-    case 'age': {
-      state.data.age = answer;
-      state.step = 'gender';
-      return { reply: 'ขอทราบเพศครับ\nชาย / หญิง / ไม่สะดวกแจ้ง', done: false };
-    }
-
-    case 'gender': {
-      state.data.gender = answer;
-      state.step = 'phone';
-      return { reply: 'ขอเบอร์ติดต่อกลับที่สะดวกครับ', done: false };
-    }
-
-    case 'phone': {
-      state.data.phone = answer;
-      state.step = 'objective';
-      return {
-        reply:
-          'สนใจวางแผนเรื่องไหนเป็นหลักครับ?\n' +
-          '1. ลดหย่อนภาษี\n' +
-          '2. ประกันสุขภาพ\n' +
-          '3. มะเร็ง/โรคร้ายแรง\n' +
-          '4. วางแผนเกษียณ\n' +
-          '5. ลงทุนระยะยาว\n' +
-          '6. คุ้มครองครอบครัว',
-        done: false,
-      };
-    }
-
-    case 'objective': {
-      state.data.purchase_objective = OBJECTIVE_MAP[answer] ?? answer;
-      state.step = 'product';
-      return {
-        reply:
-          'สนใจแผนไหนเป็นพิเศษไหมครับ?\n' +
-          '1. Tokyo SuperTax\n' +
-          '2. Good Health Prime\n' +
-          '3. Tokio Cancer Care\n' +
-          '4. Tokyo Beyond\n' +
-          '5. ยังไม่แน่ใจ อยากให้แนะนำ',
-        done: false,
-      };
-    }
-
-    case 'product': {
-      state.data.product_interest = PRODUCT_MAP[answer] ?? answer;
-      state.step = 'budget';
-      return {
-        reply:
-          'งบประมาณที่วางแผนไว้ประมาณเท่าไรครับ?\n' +
-          'เช่น 3,000 บาท/เดือน หรือ 50,000 บาท/ปี',
-        done: false,
-      };
-    }
-
-    case 'budget': {
-      state.data.budget = answer;
-      state.step = 'contact_time';
-      return {
-        reply:
-          'สะดวกให้คุณจิราวัฒน์ติดต่อกลับช่วงไหนครับ?\n' +
-          'เช่น วันนี้เย็น / พรุ่งนี้เช้า / หลังเลิกงาน',
-        done: false,
-      };
-    }
-
-    case 'contact_time': {
-      state.data.preferred_contact_time = answer;
-      state.step = 'done';
-
-      const d = state.data;
-      const summary =
-        'ขอบคุณครับ ผมสรุปข้อมูลให้นะครับ 😊\n\n' +
-        `ชื่อ: ${d.real_name || '-'}\n` +
-        `อายุ: ${d.age || '-'}\n` +
-        `เพศ: ${d.gender || '-'}\n` +
-        `เบอร์: ${d.phone || '-'}\n` +
-        `วัตถุประสงค์: ${d.purchase_objective || '-'}\n` +
-        `แผนที่สนใจ: ${d.product_interest || '-'}\n` +
-        `งบประมาณ: ${d.budget || '-'}\n` +
-        `เวลาสะดวก: ${d.preferred_contact_time || '-'}\n\n` +
-        'ผมจะส่งข้อมูลให้คุณจิราวัฒน์ติดต่อกลับโดยเร็วที่สุดครับ 🙏';
-
-      const leadData = { ...d };
-      captureMap.delete(userId);
-
-      return { reply: summary, done: true, leadData };
-    }
-
-    default:
-      captureMap.delete(userId);
-      return { reply: '', done: true };
+  const phone = detectPhone(trimmed);
+  if (!phone) {
+    // No phone detected — let OpenAI reply naturally (don't block)
+    return { handled: false, reply: '' };
   }
+
+  // Phone captured
+  clearPhoneAwait(userId);
+  accumulateLeadData(userId, { phone });
+  const data = getLeadData(userId);
+  const summary = buildSummary(displayName, data);
+
+  return { handled: true, reply: summary, phoneCaptured: phone };
 }
 
-export function buildLeadFromCapture(userId: string, data: CaptureData): LeadUpsert {
+// ─── Summary + lead payload ───────────────────────────────────────────────────
+
+export function buildSummary(displayName: string, data: ExtractedData): string {
+  const fmt = (v?: string) => v || '-';
+  const income = data.monthly_income
+    ? `${Number(data.monthly_income).toLocaleString('th-TH')} บาท/เดือน`
+    : '-';
+  const budget = data.budget
+    ? `${Number(data.budget).toLocaleString('th-TH')} บาท`
+    : '-';
+
+  return (
+    'ขอบคุณครับ 😊 ผมสรุปข้อมูลให้นะครับ\n\n' +
+    `ชื่อ: ${fmt(displayName || data.real_name)}\n` +
+    `อายุ: ${fmt(data.age)}\n` +
+    `รายได้: ${income}\n` +
+    `เป้าหมาย: ${fmt(data.purchase_objective)}\n` +
+    `แผนที่สนใจ: ${fmt(data.product_interest)}\n` +
+    `งบประมาณ: ${budget}\n` +
+    `เบอร์ติดต่อ: ${fmt(data.phone)}\n` +
+    `เวลาสะดวก: ${fmt(data.preferred_contact_time)}\n\n` +
+    'ผมจะส่งข้อมูลให้คุณจิราวัฒน์ติดต่อกลับโดยเร็วที่สุดครับ 🙏'
+  );
+}
+
+export function buildLeadPayload(
+  userId: string,
+  displayName: string,
+  data: ExtractedData
+): LeadUpsert {
   const today = new Date().toISOString().split('T')[0];
   return {
     line_user_id: userId,
+    display_name: displayName,
     real_name: data.real_name ?? '',
     age: data.age ?? '',
     gender: data.gender ?? '',
     phone: data.phone ?? '',
+    monthly_income: data.monthly_income ?? '',
     purchase_objective: data.purchase_objective ?? '',
     product_interest: data.product_interest ?? '',
     budget: data.budget ?? '',

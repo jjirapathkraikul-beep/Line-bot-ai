@@ -13,6 +13,7 @@ export interface Lead {
   age: string;
   gender: string;
   phone: string;
+  monthly_income: string;
   purchase_objective: string;
   product_interest: string;
   budget: string;
@@ -25,7 +26,6 @@ export interface Lead {
   last_contact_date: string;
   // legacy fields kept for backward compat
   occupation: string;
-  monthly_income: string;
   tax_bracket: string;
   marital_status: string;
   children: string;

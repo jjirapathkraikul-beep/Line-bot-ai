@@ -2,7 +2,7 @@ import type { LeadUpsert } from '@/types/faq';
 
 const CRM_TIMEOUT_MS = 10_000;
 
-// CRM sheet headers (must match row 1 in Google Sheet)
+// Must match column headers in Google Sheet row 1
 const CRM_FIELDS: Array<keyof LeadUpsert> = [
   'line_user_id',
   'display_name',
@@ -10,6 +10,7 @@ const CRM_FIELDS: Array<keyof LeadUpsert> = [
   'age',
   'gender',
   'phone',
+  'monthly_income',
   'purchase_objective',
   'product_interest',
   'budget',
@@ -36,20 +37,19 @@ export async function upsertLead(data: LeadUpsert): Promise<void> {
     return;
   }
 
-  // Build payload: only CRM_FIELDS, fill missing with empty string
+  // Build payload from CRM_FIELDS only — skip empty values
   const payload: Record<string, string> = {
+    line_user_id: data.line_user_id,
     last_contact_date: new Date().toISOString().split('T')[0],
   };
+
   for (const field of CRM_FIELDS) {
     const val = data[field];
-    if (val !== undefined && val !== null && val !== '') {
-      payload[field] = String(val);
-    }
+    if (val && val !== '') payload[field] = String(val);
   }
-  // Ensure line_user_id always present
-  payload.line_user_id = data.line_user_id;
 
-  console.log(`[CRM] POST fields=${Object.keys(payload).filter(k => payload[k]).join(',')}`);
+  const nonEmpty = Object.keys(payload).filter((k) => payload[k] && k !== 'line_user_id');
+  console.log(`[CRM] POST fields=${nonEmpty.join(',')}`);
 
   try {
     const res = await fetch(url, {
@@ -63,13 +63,11 @@ export async function upsertLead(data: LeadUpsert): Promise<void> {
     console.log(`[CRM] POST status=${res.status} body="${responseText.slice(0, 200)}"`);
 
     if (!res.ok) {
-      console.error(`[CRM] update failed: ${res.status} — check Apps Script deployment`);
+      console.error(`[CRM] update failed: ${res.status}`);
     }
   } catch (err) {
     const e = err as { name?: string; message?: string; cause?: unknown };
     const cause = e.cause instanceof Error ? e.cause.message : String(e.cause ?? '');
-    console.error(
-      `[CRM] error name=${e.name ?? 'unknown'} message="${e.message ?? ''}" cause="${cause}"`
-    );
+    console.error(`[CRM] error name=${e.name ?? 'unknown'} message="${e.message ?? ''}" cause="${cause}"`);
   }
 }
