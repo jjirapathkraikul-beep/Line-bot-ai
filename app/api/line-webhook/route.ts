@@ -43,6 +43,7 @@ import {
   cancelAwaitingPhone,
   buildLeadPayload,
   buildQuoteSummary,
+  extractProductFromText,
   QR_INSURANCE_CATEGORIES,
   type QuickReplyOption,
 } from '@/lib/leadCapture';
@@ -56,7 +57,7 @@ export const maxDuration = 30;
 // TIMEOUT_MS is now 24h, meaning state survives long pauses IF the function stays warm.
 // Cold-start wipes are unavoidable until Vercel KV migration (planned in requirement 7).
 // KV plan: replace all Map<string, ...> with kv.get/kv.set calls, TTL-backed by Vercel KV.
-const CODE_VERSION = 'b8e5698-v7';
+const CODE_VERSION = 'b8e5698-v8';
 
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
@@ -377,7 +378,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 13. Normal OpenAI flow ────────────────────────────────────────────
+      // ── 13. Product mention → enter premium quote flow ────────────────────
+      // Catches: "ประกันสุขภาพ", "Good Health Prime", etc. without a trigger prefix.
+      // Runs AFTER all trigger checks so it doesn't override explicit intents.
+      const mentionedProduct = extractProductFromText(userMessage);
+      if (mentionedProduct) {
+        setLastIntent(userId, 'product_mention');
+        accumulateLeadData(userId, { product_interest: mentionedProduct });
+        const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
+        console.log(`[Lead] intent=product_mention product=${mentionedProduct} missing=${missing.join(',') || 'none'}`);
+        if (missing.length === 0) {
+          await sendReply(client, replyToken, buildQuoteSummary(getLeadData(userId)));
+          await saveQuoteCrm(userId, displayName, userMessage);
+        } else {
+          const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
+          await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
+        }
+        return;
+      }
+
+      // ── 14. Normal OpenAI flow ────────────────────────────────────────────
       setLastIntent(userId, 'openai');
       const faqs         = await fetchFaq();
       const systemPrompt = buildSystemPrompt(faqs, userMessage);

@@ -437,6 +437,43 @@ export function isAnyTrigger(text: string): boolean {
   return ALL_INTENT_TRIGGERS.some((kw) => n.includes(normTH(kw)));
 }
 
+// ─── Product mention detection ────────────────────────────────────────────────
+// Detects when user names a product/category WITHOUT using an explicit trigger.
+// e.g. "ประกันสุขภาพ", "Good Health Prime" → route to premium_quote flow.
+// Must come BEFORE OpenAI so the bot doesn't receive free-form product names.
+
+const PRODUCT_KEYWORDS: [string, string][] = [
+  ['good health prime',              'Good Health Prime'],
+  ['good health',                    'Good Health Prime'],
+  ['tokio cancer care',              'Tokio Cancer Care'],
+  ['cancer care',                    'Tokio Cancer Care'],
+  ['tokyo supertax',                 'Tokyo SuperTax'],
+  ['supertax',                       'Tokyo SuperTax'],
+  ['tokyo beyond',                   'Tokyo Beyond'],
+  ['unit linked',                    'ประกันควบการลงทุน Unit Linked'],
+  ['unitlinked',                     'ประกันควบการลงทุน Unit Linked'],
+  ['ประกันสุขภาพ',                   'ประกันสุขภาพ'],
+  ['ประกันมะเร็ง',                   'ประกันมะเร็งและโรคร้ายแรง'],
+  ['โรคร้ายแรง',                     'ประกันมะเร็งและโรคร้ายแรง'],
+  ['ประกันเกษียณ',                   'ประกันเกษียณ'],
+  ['วางแผนเกษียณ',                   'ประกันเกษียณ'],
+  ['ประกันลดหย่อนภาษี',              'ประกันลดหย่อนภาษี'],
+  ['ลดหย่อนภาษี',                    'ประกันลดหย่อนภาษี'],
+  ['ประกันชีวิตสะสมทรัพย์',          'ประกันชีวิตสะสมทรัพย์'],
+  ['สะสมทรัพย์',                     'ประกันชีวิตสะสมทรัพย์'],
+];
+
+// Returns canonical product name, or null if no match.
+// Does NOT match if text also contains an interest/quote/contact trigger
+// (those take priority and are checked earlier in route.ts).
+export function extractProductFromText(text: string): string | null {
+  const n = normTH(text);
+  for (const [kw, product] of PRODUCT_KEYWORDS) {
+    if (n.includes(normTH(kw))) return product;
+  }
+  return null;
+}
+
 // ─── Existing data summary ────────────────────────────────────────────────────
 
 export function buildExistingDataSummary(data: ExtractedData): string {
@@ -531,9 +568,16 @@ function normalizeFieldValue(field: LeadField, text: string): string {
     if (text.includes('ไม่ระบุ')) return 'ไม่ระบุ';
   }
   if (field === 'age') {
-    const m = text.match(/\d{1,3}/);
-    if (m) return m[0];
-    return text.replace('ปี', '').trim();
+    // Preserve QR range values as-is
+    if (text.includes('ต่ำกว่า') || text.includes('น้อยกว่า')) return 'ต่ำกว่า 30';
+    if (text === '50+' || (text.includes('50') && text.includes('ขึ้น'))) return '50+';
+    // Store dash-range like "30-39" or "30–39" as "30-39"
+    const rangeM = text.match(/(\d{1,3})\s*[-–—]\s*(\d{1,3})/);
+    if (rangeM) return `${rangeM[1]}-${rangeM[2]}`;
+    // Single number
+    const numM = text.match(/\d{1,3}/);
+    if (numM) return numM[0];
+    return text.replace(/ปี/g, '').trim();
   }
   return text.trim();
 }
@@ -584,11 +628,13 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
       pendingQueue: remaining,
       pendingMode:  state.mode,
     });
+    console.log(`[Lead:field] parsed_field=${state.field} value=${value} next_state=awaiting_field:${next}`);
     return buildFieldQuestion(next, state.mode, userId);
   }
 
   awaitingField.delete(userId);
-  saveStateMetadata(userId, { lastState: `field_complete`, pendingField: undefined });
+  saveStateMetadata(userId, { lastState: 'field_complete', pendingField: undefined });
+  console.log(`[Lead:field] parsed_field=${state.field} value=${value} next_state=field_complete mode=${state.mode}`);
   return { reply: '', done: true, allCaptured: true, mode: state.mode };
 }
 
