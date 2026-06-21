@@ -29,6 +29,7 @@ import {
   cancelAwaitingPhone,
   buildLeadPayload,
   buildExistingDataSummary,
+  FIELD_LABELS,
   type QuickReplyOption,
 } from '@/lib/leadCapture';
 
@@ -238,7 +239,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           // Show existing data + ask only for what's missing
           const existingSummary = buildExistingDataSummary(data);
           const missingLabel = missing
-            .map((f) => ({ age: 'อายุ', gender: 'เพศ', product_interest: 'แผนที่สนใจ' }[f] ?? f))
+            .map((f) => FIELD_LABELS[f] ?? f)
             .join(', ');
 
           let introText: string;

@@ -58,6 +58,22 @@ export const QR_AGE: QuickReplyOption[] = [
   { label: '50 ปีขึ้นไป',    text: '50+' },
 ];
 
+// ─── Lead field type & labels ─────────────────────────────────────────────────
+
+export type LeadField = keyof ExtractedData;
+
+export const FIELD_LABELS: Record<LeadField, string> = {
+  real_name:              'ชื่อ',
+  age:                    'อายุ',
+  gender:                 'เพศ',
+  phone:                  'เบอร์โทร',
+  monthly_income:         'รายได้',
+  purchase_objective:     'เป้าหมาย',
+  product_interest:       'แผนที่สนใจ',
+  budget:                 'งบประมาณ',
+  preferred_contact_time: 'เวลาสะดวก',
+};
+
 // ─── Trigger keyword groups ───────────────────────────────────────────────────
 
 // Contact triggers → need phone number
@@ -81,12 +97,12 @@ export const QUOTE_TRIGGERS = [
 ];
 
 // Minimum required for premium quote
-export const QUOTE_REQUIRED_FIELDS: Array<keyof ExtractedData> = [
+export const QUOTE_REQUIRED_FIELDS: LeadField[] = [
   'age', 'gender', 'product_interest',
 ];
 
 // Fields scored for lead completeness (each = 1 point, max 5/5)
-export const SCORED_FIELDS: Array<keyof ExtractedData> = [
+export const SCORED_FIELDS: LeadField[] = [
   'age', 'gender', 'phone', 'product_interest', 'budget',
 ];
 
@@ -102,8 +118,8 @@ const userLeadData  = new Map<string, ExtractedData>();
 const awaitingPhone = new Map<string, { startedAt: number }>();
 const awaitingGoal  = new Map<string, { startedAt: number }>();
 const awaitingField = new Map<string, {
-  field: keyof ExtractedData;
-  queue: Array<keyof ExtractedData>;
+  field: LeadField;
+  queue: LeadField[];
   startedAt: number;
 }>();
 
@@ -161,8 +177,8 @@ export function cancelAllCapture(userId: string): void {
 
 export function getMissingFields(
   userId: string,
-  required: Array<keyof ExtractedData>
-): Array<keyof ExtractedData> {
+  required: LeadField[]
+): LeadField[] {
   const data = userLeadData.get(userId) ?? {};
   return required.filter((f) => !data[f]);
 }
@@ -170,7 +186,7 @@ export function getMissingFields(
 export function getLeadCompleteness(userId: string): {
   score: number;
   total: number;
-  missing: Array<keyof ExtractedData>;
+  missing: LeadField[];
 } {
   const missing = getMissingFields(userId, SCORED_FIELDS);
   return { score: SCORED_FIELDS.length - missing.length, total: SCORED_FIELDS.length, missing };
@@ -265,7 +281,7 @@ export function buildExistingDataSummary(data: ExtractedData): string {
 
 // ─── Targeted field capture ───────────────────────────────────────────────────
 
-function buildFieldQuestion(field: keyof ExtractedData): CaptureResponse {
+function buildFieldQuestion(field: LeadField): CaptureResponse {
   switch (field) {
     case 'age':
       return { reply: 'ขอทราบอายุประมาณเท่าไรครับ?', quickReply: QR_AGE };
@@ -285,7 +301,7 @@ function buildFieldQuestion(field: keyof ExtractedData): CaptureResponse {
   }
 }
 
-function validateFieldInput(field: keyof ExtractedData, text: string): boolean {
+function validateFieldInput(field: LeadField, text: string): boolean {
   switch (field) {
     case 'age':
       return /\d/.test(text) || ['ต่ำกว่า 30', '30-39', '40-49', '50+'].some((r) => text.includes(r));
@@ -306,7 +322,7 @@ const PRODUCT_MAP: Record<string, string> = {
   '5': 'ยังไม่แน่ใจ',
 };
 
-function normalizeFieldValue(field: keyof ExtractedData, text: string): string {
+function normalizeFieldValue(field: LeadField, text: string): string {
   if (field === 'product_interest') return PRODUCT_MAP[text.trim()] ?? text.trim();
   if (field === 'gender') {
     if (text.includes('ชาย'))    return 'ชาย';
@@ -324,7 +340,7 @@ function normalizeFieldValue(field: keyof ExtractedData, text: string): string {
 
 export function startFieldCapture(
   userId: string,
-  missingFields: Array<keyof ExtractedData>
+  missingFields: LeadField[]
 ): CaptureResponse {
   if (missingFields.length === 0) return { reply: '', done: true };
   const [first, ...rest] = missingFields;
