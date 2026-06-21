@@ -110,5 +110,8 @@ async function callOpenAI(
     `[OpenAI] ok model=${model} in=${usage?.prompt_tokens ?? 0} out=${usage?.completion_tokens ?? 0} total=${usage?.total_tokens ?? 0}`
   );
 
-  return response.choices[0]?.message?.content ?? DEFAULT_REPLY;
+  const content = response.choices[0]?.message?.content ?? DEFAULT_REPLY;
+  // Model sometimes returns literal \uXXXX sequences (incl. surrogate pairs like 📋).
+  // Decode them so LINE renders actual emoji instead of escape text.
+  return content.replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
