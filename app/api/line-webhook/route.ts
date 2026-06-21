@@ -10,11 +10,12 @@ import {
   accumulateLeadData,
   getLeadData,
   hasPhone,
-  isLeadComplete,
   getMissingFields,
   getLeadCompleteness,
+  getCurrentState,
   isContactTrigger,
   isQuoteTrigger,
+  isAnyTrigger,
   QUOTE_REQUIRED_FIELDS,
   isAwaitingPhone,
   startPhoneAwait,
@@ -24,8 +25,10 @@ import {
   isAwaitingField,
   startFieldCapture,
   handleFieldCapture,
+  cancelFieldCapture,
+  cancelAwaitingPhone,
   buildLeadPayload,
-  buildSummary,
+  buildExistingDataSummary,
   type QuickReplyOption,
 } from '@/lib/leadCapture';
 
@@ -34,7 +37,7 @@ export const maxDuration = 30;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
-const rateLimitMap    = new Map<string, { count: number; resetAt: number }>();
+const rateLimitMap     = new Map<string, { count: number; resetAt: number }>();
 const displayNameCache = new Map<string, string>();
 
 function isRateLimited(userId: string): boolean {
@@ -106,22 +109,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  const body = JSON.parse(rawBody) as WebhookRequestBody;
+  const body   = JSON.parse(rawBody) as WebhookRequestBody;
   const client = getLineClient();
 
   await Promise.all(
     body.events.map(async (event) => {
       if (event.type !== 'message' || event.message.type !== 'text') return;
 
-      const msgEvent  = event as MessageEvent;
-      const textMsg   = msgEvent.message as TextEventMessage;
-      const userId    = msgEvent.source.userId ?? 'unknown';
+      const msgEvent   = event as MessageEvent;
+      const textMsg    = msgEvent.message as TextEventMessage;
+      const userId     = msgEvent.source.userId ?? 'unknown';
       const replyToken = msgEvent.replyToken;
 
       const userMessage = textMsg.text?.trim() ?? '';
       if (!userMessage || userMessage.length > 2000) return;
-
-      console.log(`[Webhook] userId=${userId} msg="${userMessage.substring(0, 60)}"`);
 
       if (isRateLimited(userId)) {
         await sendReply(client, replyToken, 'ขออภัยครับ ส่งมาถี่เกินไป รอสักครู่แล้วลองใหม่ครับ');
@@ -132,27 +133,43 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       accumulateLeadData(userId, extractFromText(userMessage));
       const displayName = await getDisplayName(client, userId);
 
-      // ── 2. Targeted field capture (e.g. asking missing เช็กเบี้ย fields) ──
+      // ── 2. Log current state ──────────────────────────────────────────────
+      const { score, total, missing: missingScored } = getLeadCompleteness(userId);
+      const state = getCurrentState(userId);
+      console.log(
+        `[Lead] state=${state} score=${score}/${total}` +
+        ` missing_scored=${missingScored.join(',') || 'none'}` +
+        ` msg="${userMessage.substring(0, 40)}"`
+      );
+
+      // ── 3. Targeted field capture ─────────────────────────────────────────
       if (isAwaitingField(userId)) {
-        const result = handleFieldCapture(userId, userMessage);
+        // If user changed intent mid-flow, cancel capture and process new intent
+        if (isAnyTrigger(userMessage)) {
+          console.log(`[Lead] intent switch detected while awaiting_field — cancelling capture`);
+          cancelFieldCapture(userId);
+          // fall through to handle new intent
+        } else {
+          const result = handleFieldCapture(userId, userMessage);
 
-        if (result.reply) {
-          await sendReply(client, replyToken, result.reply, result.quickReply);
-        }
+          if (result.reply) {
+            await sendReply(client, replyToken, result.reply, result.quickReply);
+          }
 
-        if (result.done && result.allCaptured) {
-          // All missing fields captured — let user know they can proceed
-          await sendReply(
-            client, replyToken,
-            'ขอบคุณครับ ✅ ตอนนี้ข้อมูลครบแล้ว\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊'
-          );
-          await saveCrm(userId, displayName, userMessage);
+          if (result.done && result.allCaptured) {
+            const { score: s, total: t } = getLeadCompleteness(userId);
+            await sendReply(
+              client, replyToken,
+              `ขอบคุณครับ ✅ ข้อมูลครบแล้ว (${s}/${t})\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊`
+            );
+            await saveCrm(userId, displayName, userMessage);
+          }
+          return;
         }
-        return;
       }
 
-      // ── 3. Goal capture (step after phone) ───────────────────────────────
-      if (isAwaitingGoal(userId)) {
+      // ── 4. Goal capture (after phone) ─────────────────────────────────────
+      if (isAwaitingGoal(userId) && !isQuoteTrigger(userMessage)) {
         const result = handleGoalAwait(userId, userMessage, displayName);
         await sendReply(client, replyToken, result.reply, result.quickReply);
 
@@ -164,46 +181,73 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 4. Phone capture ──────────────────────────────────────────────────
+      // ── 5. Phone capture ──────────────────────────────────────────────────
       if (isAwaitingPhone(userId)) {
-        const result = handlePhoneAwait(userId, userMessage);
-
-        if (result.reply) {
-          await sendReply(client, replyToken, result.reply, result.quickReply);
-          if (result.phoneCaptured) {
-            await upsertLead({
-              line_user_id: userId, display_name: displayName,
-              phone: result.phoneCaptured,
-              lead_status: 'interested', follow_up_status: 'awaiting_goal',
-            }).catch(logCrmErr);
-          }
-          return;
-        }
-        // No phone detected — fall through to OpenAI
-      }
-
-      // ── 5. Quote trigger (เช็กเบี้ย) ─────────────────────────────────────
-      if (isQuoteTrigger(userMessage)) {
-        const missing = getMissingFields(userId, QUOTE_REQUIRED_FIELDS);
-
-        if (missing.length === 0) {
-          // All required data present — enrich context and let OpenAI answer
-          console.log(`[Webhook] Quote request — data complete, routing to OpenAI`);
-          // Fall through to OpenAI below (don't return here)
+        // If user switched to quote intent, clear phone state and fall through
+        if (isQuoteTrigger(userMessage)) {
+          console.log(`[Lead] intent switch to quote — cancelling phone await`);
+          cancelAwaitingPhone(userId);
+          // fall through to quote handling
         } else {
-          console.log(`[Webhook] Quote request — missing: ${missing.join(',')}`);
-          const result = startFieldCapture(userId, missing);
-          const missingLabel = missing.map((f) => ({ age: 'อายุ', gender: 'เพศ', product_interest: 'แผนที่สนใจ' }[f] ?? f)).join(', ');
-          const intro = `เช็กเบี้ยให้ได้เลยครับ 😊\nขอข้อมูลเพิ่มเติมนิดนึงครับ (ขาด: ${missingLabel})`;
-          await sendReply(client, replyToken, intro);
+          const result = handlePhoneAwait(userId, userMessage);
+
           if (result.reply) {
             await sendReply(client, replyToken, result.reply, result.quickReply);
+            if (result.phoneCaptured) {
+              await upsertLead({
+                line_user_id: userId, display_name: displayName,
+                phone: result.phoneCaptured,
+                lead_status: 'interested', follow_up_status: 'awaiting_goal',
+              }).catch(logCrmErr);
+            }
+            return;
+          }
+          // No phone detected — fall through to OpenAI
+        }
+      }
+
+      // ── 6. Quote trigger: เช็กเบี้ย / คำนวณเบี้ย ─────────────────────────
+      if (isQuoteTrigger(userMessage)) {
+        cancelAwaitingPhone(userId); // Clear any stale phone-await state
+
+        const data    = getLeadData(userId);
+        const missing = getMissingFields(userId, QUOTE_REQUIRED_FIELDS);
+        const { score: qs, total: qt } = getLeadCompleteness(userId);
+
+        console.log(
+          `[Lead] intent=quote missing_required=${missing.join(',') || 'none'} score=${qs}/${qt}`
+        );
+
+        if (missing.length === 0) {
+          // ✅ All required fields present — go to OpenAI quotation flow
+          console.log(`[Lead] Quote request complete — routing to OpenAI`);
+          // fall through to OpenAI
+        } else {
+          // Show existing data + ask only for what's missing
+          const existingSummary = buildExistingDataSummary(data);
+          const missingLabel = missing
+            .map((f) => ({ age: 'อายุ', gender: 'เพศ', product_interest: 'แผนที่สนใจ' }[f] ?? f))
+            .join(', ');
+
+          let introText: string;
+          if (existingSummary) {
+            introText =
+              `📋 ข้อมูลที่มีอยู่แล้ว\n${existingSummary}\n\n` +
+              `เพื่อคำนวณเบี้ยเพิ่มเติม ขอข้อมูล: ${missingLabel}`;
+          } else {
+            introText = `เช็กเบี้ยให้ได้เลยครับ 😊\nขอข้อมูลเพิ่มนิดนึงครับ (${missingLabel})`;
+          }
+
+          const fieldQ = startFieldCapture(userId, missing);
+          await sendReply(client, replyToken, introText);
+          if (fieldQ.reply) {
+            await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
           }
           return;
         }
       }
 
-      // ── 6. Contact trigger → ask for phone (only if not already captured) ──
+      // ── 7. Contact trigger → ask phone (only if not already captured) ─────
       if (isContactTrigger(userMessage) && !hasPhone(userId)) {
         const result = startPhoneAwait(userId);
         await sendReply(client, replyToken, result.reply);
@@ -215,7 +259,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 7. Normal OpenAI flow ─────────────────────────────────────────────
+      // ── 8. Normal OpenAI flow ─────────────────────────────────────────────
       const faqs = await fetchFaq();
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
       const reply = await getChatReply(userId, systemPrompt, userMessage);
@@ -231,7 +275,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 async function saveCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
   const data = getLeadData(userId);
   const { score, total } = getLeadCompleteness(userId);
-  console.log(`[CRM] completeness=${score}/${total} userId=${userId}`);
+  console.log(`[CRM] save score=${score}/${total} userId=${userId}`);
   await upsertLead({
     line_user_id: userId,
     display_name: displayName,

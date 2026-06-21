@@ -23,6 +23,7 @@ export interface CaptureResponse {
   reply: string;
   quickReply?: QuickReplyOption[];
   phoneCaptured?: string;
+  allCaptured?: boolean;
   done?: boolean;
   cancelled?: boolean;
 }
@@ -71,7 +72,7 @@ export const CONTACT_TRIGGERS = [
   'นัดคุย',
 ];
 
-// Quote triggers → need age + gender + product_interest
+// Quote triggers → need age + gender + product_interest (NOT phone)
 export const QUOTE_TRIGGERS = [
   'เช็กเบี้ย',
   'คำนวณเบี้ย',
@@ -79,12 +80,12 @@ export const QUOTE_TRIGGERS = [
   'ดูเบี้ย',
 ];
 
-// All required fields for premium quote
+// Minimum required for premium quote
 export const QUOTE_REQUIRED_FIELDS: Array<keyof ExtractedData> = [
   'age', 'gender', 'product_interest',
 ];
 
-// Fields scored for completeness
+// Fields scored for lead completeness (each = 1 point, max 5/5)
 export const SCORED_FIELDS: Array<keyof ExtractedData> = [
   'age', 'gender', 'phone', 'product_interest', 'budget',
 ];
@@ -92,15 +93,68 @@ export const SCORED_FIELDS: Array<keyof ExtractedData> = [
 const TIMEOUT_MS = 30 * 60 * 1000;
 const CANCEL_KEYWORDS = ['ยกเลิก', 'cancel', 'หยุด', 'ออก'];
 
+// All intent triggers — used to detect intent switches mid-flow
+const ALL_INTENT_TRIGGERS = [...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS];
+
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
-const userLeadData     = new Map<string, ExtractedData>();
-const awaitingPhone    = new Map<string, { startedAt: number }>();
-const awaitingGoal     = new Map<string, { startedAt: number }>();
-const awaitingField    = new Map<string, { field: keyof ExtractedData; queue: Array<keyof ExtractedData>; startedAt: number }>();
+const userLeadData  = new Map<string, ExtractedData>();
+const awaitingPhone = new Map<string, { startedAt: number }>();
+const awaitingGoal  = new Map<string, { startedAt: number }>();
+const awaitingField = new Map<string, {
+  field: keyof ExtractedData;
+  queue: Array<keyof ExtractedData>;
+  startedAt: number;
+}>();
 
 function alive(entry: { startedAt: number }): boolean {
   return Date.now() - entry.startedAt < TIMEOUT_MS;
+}
+
+// ─── State introspection ──────────────────────────────────────────────────────
+
+export function isAwaitingField(userId: string): boolean {
+  const e = awaitingField.get(userId);
+  if (!e) return false;
+  if (!alive(e)) { awaitingField.delete(userId); return false; }
+  return true;
+}
+
+export function isAwaitingPhone(userId: string): boolean {
+  const e = awaitingPhone.get(userId);
+  if (!e) return false;
+  if (!alive(e)) { awaitingPhone.delete(userId); return false; }
+  return true;
+}
+
+export function isAwaitingGoal(userId: string): boolean {
+  const e = awaitingGoal.get(userId);
+  if (!e) return false;
+  if (!alive(e)) { awaitingGoal.delete(userId); return false; }
+  return true;
+}
+
+export function getCurrentState(userId: string): string {
+  if (isAwaitingField(userId)) return 'awaiting_field';
+  if (isAwaitingGoal(userId))  return 'awaiting_goal';
+  if (isAwaitingPhone(userId)) return 'awaiting_phone';
+  return 'idle';
+}
+
+// ─── State management ─────────────────────────────────────────────────────────
+
+export function cancelFieldCapture(userId: string): void {
+  awaitingField.delete(userId);
+}
+
+export function cancelAwaitingPhone(userId: string): void {
+  awaitingPhone.delete(userId);
+}
+
+export function cancelAllCapture(userId: string): void {
+  awaitingField.delete(userId);
+  awaitingPhone.delete(userId);
+  awaitingGoal.delete(userId);
 }
 
 // ─── Lead completeness ────────────────────────────────────────────────────────
@@ -126,7 +180,7 @@ export function isLeadComplete(userId: string): boolean {
   return getMissingFields(userId, SCORED_FIELDS).length === 0;
 }
 
-// ─── Extraction ───────────────────────────────────────────────────────────────
+// ─── Data extraction ──────────────────────────────────────────────────────────
 
 export function detectPhone(text: string): string | null {
   const m = text.match(/0[689]\d[-\s]?\d{3,4}[-\s]?\d{3,4}/) ??
@@ -186,6 +240,22 @@ export function isQuoteTrigger(text: string): boolean {
   return QUOTE_TRIGGERS.some((kw) => text.includes(kw));
 }
 
+export function isAnyTrigger(text: string): boolean {
+  return ALL_INTENT_TRIGGERS.some((kw) => text.includes(kw));
+}
+
+// ─── Existing data summary (shown before asking missing fields) ───────────────
+
+export function buildExistingDataSummary(data: ExtractedData): string {
+  const lines: string[] = [];
+  if (data.age)              lines.push(`• อายุ ${data.age} ปี`);
+  if (data.gender)           lines.push(`• เพศ${data.gender}`);
+  if (data.product_interest) lines.push(`• สนใจ ${data.product_interest}`);
+  if (data.budget)           lines.push(`• งบประมาณ ${Number(data.budget).toLocaleString('th-TH')} บาท`);
+  if (data.phone)            lines.push(`• เบอร์โทร ${data.phone}`);
+  return lines.join('\n');
+}
+
 // ─── Targeted field capture ───────────────────────────────────────────────────
 
 function buildFieldQuestion(field: keyof ExtractedData): CaptureResponse {
@@ -193,7 +263,7 @@ function buildFieldQuestion(field: keyof ExtractedData): CaptureResponse {
     case 'age':
       return { reply: 'ขอทราบอายุประมาณเท่าไรครับ?', quickReply: QR_AGE };
     case 'gender':
-      return { reply: 'ขอทราบเพศครับ', quickReply: QR_GENDER };
+      return { reply: 'กรุณาเลือกเพศครับ', quickReply: QR_GENDER };
     case 'product_interest':
       return {
         reply: 'สนใจแผนไหนครับ?\n\n1. Tokyo SuperTax\n2. Good Health Prime\n3. Tokio Cancer Care\n4. Tokyo Beyond',
@@ -208,6 +278,19 @@ function buildFieldQuestion(field: keyof ExtractedData): CaptureResponse {
   }
 }
 
+function validateFieldInput(field: keyof ExtractedData, text: string): boolean {
+  switch (field) {
+    case 'age':
+      return /\d/.test(text) || ['ต่ำกว่า 30', '30-39', '40-49', '50+'].some((r) => text.includes(r));
+    case 'gender':
+      return text.includes('ชาย') || text.includes('หญิง') || text.includes('ไม่ระบุ');
+    case 'product_interest':
+      return text.length > 0 && text.length < 100;
+    default:
+      return text.length > 0;
+  }
+}
+
 const PRODUCT_MAP: Record<string, string> = {
   '1': 'Tokyo SuperTax',
   '2': 'Good Health Prime',
@@ -219,17 +302,17 @@ const PRODUCT_MAP: Record<string, string> = {
 function normalizeFieldValue(field: keyof ExtractedData, text: string): string {
   if (field === 'product_interest') return PRODUCT_MAP[text.trim()] ?? text.trim();
   if (field === 'gender') {
-    if (text.includes('ชาย')) return 'ชาย';
-    if (text.includes('หญิง')) return 'หญิง';
+    if (text.includes('ชาย'))    return 'ชาย';
+    if (text.includes('หญิง'))   return 'หญิง';
+    if (text.includes('ไม่ระบุ')) return 'ไม่ระบุ';
+  }
+  if (field === 'age') {
+    const m = text.match(/\d{1,3}/);
+    if (m) return m[0];
+    // QR labels like "ต่ำกว่า 30", "30-39"
+    return text.replace('ปี', '').trim();
   }
   return text.trim();
-}
-
-export function isAwaitingField(userId: string): boolean {
-  const e = awaitingField.get(userId);
-  if (!e) return false;
-  if (!alive(e)) { awaitingField.delete(userId); return false; }
-  return true;
 }
 
 export function startFieldCapture(
@@ -242,7 +325,10 @@ export function startFieldCapture(
   return buildFieldQuestion(first);
 }
 
-export function handleFieldCapture(userId: string, text: string): CaptureResponse & { allCaptured?: boolean } {
+export function handleFieldCapture(
+  userId: string,
+  text: string
+): CaptureResponse {
   const state = awaitingField.get(userId);
   if (!state) return { reply: '', done: true };
 
@@ -251,7 +337,11 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
     return { reply: 'รับทราบครับ 😊', cancelled: true, done: true };
   }
 
-  // Save the answered field
+  // Invalid input — re-ask the same question
+  if (!validateFieldInput(state.field, text)) {
+    return buildFieldQuestion(state.field);
+  }
+
   const value = normalizeFieldValue(state.field, text);
   accumulateLeadData(userId, { [state.field]: value });
 
@@ -261,19 +351,11 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
     return buildFieldQuestion(next);
   }
 
-  // All done
   awaitingField.delete(userId);
   return { reply: '', done: true, allCaptured: true };
 }
 
 // ─── Phone → Goal flow ────────────────────────────────────────────────────────
-
-export function isAwaitingPhone(userId: string): boolean {
-  const e = awaitingPhone.get(userId);
-  if (!e) return false;
-  if (!alive(e)) { awaitingPhone.delete(userId); return false; }
-  return true;
-}
 
 export function startPhoneAwait(userId: string): CaptureResponse {
   awaitingPhone.set(userId, { startedAt: Date.now() });
@@ -283,7 +365,10 @@ export function startPhoneAwait(userId: string): CaptureResponse {
 export function handlePhoneAwait(userId: string, text: string): CaptureResponse {
   if (CANCEL_KEYWORDS.some((kw) => text.includes(kw))) {
     awaitingPhone.delete(userId);
-    return { reply: 'รับทราบครับ 😊\nพิมพ์ "ติดต่อคุณจิราวัฒน์" ได้เลยถ้าต้องการนัดคุยภายหลัง', cancelled: true };
+    return {
+      reply: 'รับทราบครับ 😊\nพิมพ์ "ติดต่อคุณจิราวัฒน์" ได้เลยถ้าต้องการนัดคุยภายหลัง',
+      cancelled: true,
+    };
   }
 
   const phone = detectPhone(text);
@@ -304,13 +389,6 @@ export function handlePhoneAwait(userId: string, text: string): CaptureResponse 
       '4️⃣ ลงทุนระยะยาว',
     quickReply: QR_GOALS,
   };
-}
-
-export function isAwaitingGoal(userId: string): boolean {
-  const e = awaitingGoal.get(userId);
-  if (!e) return false;
-  if (!alive(e)) { awaitingGoal.delete(userId); return false; }
-  return true;
 }
 
 const GOAL_MAP: Record<string, string> = {
@@ -363,9 +441,11 @@ export function buildSummary(
     `📋 สรุปข้อมูล${scoreStr}\n\n` +
     `👤 ชื่อ: ${f(displayName || data.real_name)}\n` +
     `🎂 อายุ: ${f(data.age)}\n` +
+    `⚧ เพศ: ${f(data.gender)}\n` +
     `💰 รายได้: ${income}\n` +
     `🎯 เป้าหมาย: ${f(data.purchase_objective)}\n` +
     `📄 แผนที่สนใจ: ${f(data.product_interest)}\n` +
+    `💵 งบประมาณ: ${budget}\n` +
     `📞 เบอร์โทร: ${f(data.phone)}\n` +
     `🕒 เวลาสะดวก: ${f(data.preferred_contact_time)}\n\n` +
     'คุณจิราวัฒน์จะติดต่อกลับเร็วๆ นี้ครับ 🙏'
