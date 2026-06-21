@@ -14,11 +14,15 @@ import {
   getMissingFields,
   getLeadCompleteness,
   getCurrentState,
+  getStateDebugInfo,
+  setLastIntent,
+  buildStatePayload,
   isContactTrigger,
   isQuoteTrigger,
   isInterestTrigger,
   isAnyTrigger,
   PREMIUM_QUOTE_FIELDS,
+  QUOTE_REQUIRED_FIELDS,
   isAwaitingPhone,
   startPhoneAwait,
   handlePhoneAwait,
@@ -30,6 +34,11 @@ import {
   isAwaitingCategory,
   startCategoryFlow,
   handleCategoryAwait,
+  isAwaitingResume,
+  startResumeFlow,
+  handleResumeAwait,
+  hasExpiredStateForResume,
+  trySmartResume,
   cancelFieldCapture,
   cancelAwaitingPhone,
   buildLeadPayload,
@@ -38,14 +47,22 @@ import {
   type QuickReplyOption,
 } from '@/lib/leadCapture';
 
-export const dynamic = 'force-dynamic';
+export const dynamic    = 'force-dynamic';
 export const maxDuration = 30;
 
-const CODE_VERSION = 'b8e5698-v6';
+// ─── Version probe ────────────────────────────────────────────────────────────
+// State management note:
+// All state lives in in-memory Maps → reset on Vercel cold start (every ~few min of inactivity).
+// TIMEOUT_MS is now 24h, meaning state survives long pauses IF the function stays warm.
+// Cold-start wipes are unavoidable until Vercel KV migration (planned in requirement 7).
+// KV plan: replace all Map<string, ...> with kv.get/kv.set calls, TTL-backed by Vercel KV.
+const CODE_VERSION = 'b8e5698-v7';
 
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
@@ -67,7 +84,7 @@ function isRateLimited(userId: string): boolean {
 function getLineClient(): Client {
   return new Client({
     channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN!,
-    channelSecret: process.env.LINE_CHANNEL_SECRET!,
+    channelSecret:      process.env.LINE_CHANNEL_SECRET!,
   });
 }
 
@@ -80,7 +97,7 @@ async function getDisplayName(client: Client, userId: string): Promise<string> {
   } catch { return ''; }
 }
 
-// Always use a SINGLE replyMessage call per event (replyToken is one-time-use)
+// replyToken is one-time-use per LINE event → always ONE call per event
 async function sendReply(
   client: Client,
   replyToken: string,
@@ -103,10 +120,12 @@ async function sendReply(
   }
 }
 
+// ─── Webhook ──────────────────────────────────────────────────────────────────
+
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const channelSecret = process.env.LINE_CHANNEL_SECRET;
   if (!channelSecret) {
-    console.error('[Webhook] LINE_CHANNEL_SECRET is not configured');
+    console.error('[Webhook] LINE_CHANNEL_SECRET not configured');
     return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
   }
 
@@ -155,26 +174,80 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 3. Log current state ──────────────────────────────────────────────
+      // ── 3. Debug logging ──────────────────────────────────────────────────
       const { score, total, missing: missingScored } = getLeadCompleteness(userId);
-      const state = getCurrentState(userId);
-      const isQT  = isQuoteTrigger(userMessage);
-      const isCT  = isContactTrigger(userMessage);
-      const isIT  = isInterestTrigger(userMessage);
+      const dbg    = getStateDebugInfo(userId);
+      const isQT   = isQuoteTrigger(userMessage);
+      const isCT   = isContactTrigger(userMessage);
+      const isIT   = isInterestTrigger(userMessage);
       const msgHex = Buffer.from(userMessage, 'utf8').toString('hex').substring(0, 60);
       console.log(
-        `[Lead] v=${CODE_VERSION} state=${state} score=${score}/${total}` +
-        ` isQuote=${isQT} isContact=${isCT} isInterest=${isIT}` +
+        `[Lead] v=${CODE_VERSION}` +
+        ` current_state=${dbg.currentState}` +
+        ` last_state=${dbg.lastState}` +
+        ` last_intent=${dbg.lastIntent}` +
+        ` state_age_min=${dbg.stateAgeMinutes}` +
+        ` score=${score}/${total}` +
         ` missing=${missingScored.join(',') || 'none'}` +
+        ` isQuote=${isQT} isContact=${isCT} isInterest=${isIT}` +
         ` msg="${userMessage.substring(0, 40)}" hex=${msgHex}`
       );
 
-      // ── 4. Targeted field capture ─────────────────────────────────────────
+      // ── 4. Resume prompt response ─────────────────────────────────────────
+      if (isAwaitingResume(userId)) {
+        const result = handleResumeAwait(userId, userMessage);
+        if (!result.fallthrough) {
+          if (result.reply) await sendReply(client, replyToken, result.reply, result.quickReply);
+          if (result.resumed && result.reply) return; // already replied with next field
+          if (result.reset) return;
+          if (result.resumed) { /* fall through to field capture if reply was empty */ }
+          else return;
+        }
+        // fallthrough: intent detected mid-resume → continue below
+      }
+
+      // ── 5. Expired-state smart resume ─────────────────────────────────────
+      // If field capture expired but stateMetadata shows pending field within 7d:
+      //   a) If user's message directly answers the pending field → auto-restore silently
+      //   b) If not an intent trigger → show "คุยต่อ / เริ่มใหม่?" prompt
+      if (!isAwaitingField(userId) && !isAwaitingResume(userId) && hasExpiredStateForResume(userId)) {
+        const autoResult = trySmartResume(userId, userMessage);
+        if (autoResult) {
+          // Auto-resumed: user's message was a valid field answer
+          if (autoResult.reply) {
+            await sendReply(client, replyToken, autoResult.reply, autoResult.quickReply);
+          } else if (autoResult.done && autoResult.allCaptured) {
+            if (autoResult.mode === 'premium_quote') {
+              const data = getLeadData(userId);
+              await sendReply(client, replyToken, buildQuoteSummary(data));
+              await saveQuoteCrm(userId, displayName, userMessage);
+            } else {
+              const { score: s, total: t } = getLeadCompleteness(userId);
+              await sendReply(client, replyToken,
+                `✅ ข้อมูลครบแล้วครับ (${s}/${t})\n\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊`
+              );
+              await saveCrm(userId, displayName, userMessage);
+            }
+          }
+          return;
+        }
+
+        // Can't auto-resume → if not an intent trigger, show resume prompt
+        if (!isAnyTrigger(userMessage)) {
+          setLastIntent(userId, 'resume_prompt');
+          const prompt = startResumeFlow(userId);
+          await sendReply(client, replyToken, prompt.reply, prompt.quickReply);
+          return;
+        }
+        // Intent trigger → skip resume prompt, fall through to intent handlers
+      }
+
+      // ── 6. Targeted field capture ─────────────────────────────────────────
       if (isAwaitingField(userId)) {
         if (isAnyTrigger(userMessage)) {
-          // User switched intent mid-flow — cancel and fall through
-          console.log(`[Lead] intent switch while awaiting_field — cancelling`);
+          console.log('[Lead] intent switch while awaiting_field — cancelling');
           cancelFieldCapture(userId);
+          // fall through to intent handlers
         } else {
           const result = handleFieldCapture(userId, userMessage);
 
@@ -187,8 +260,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               await saveQuoteCrm(userId, displayName, userMessage);
             } else {
               const { score: s, total: t } = getLeadCompleteness(userId);
-              await sendReply(
-                client, replyToken,
+              await sendReply(client, replyToken,
                 `✅ ข้อมูลครบแล้วครับ (${s}/${t})\n\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊`
               );
               await saveCrm(userId, displayName, userMessage);
@@ -200,29 +272,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── 5. Category await (after 6-category QR shown) ────────────────────
+      // ── 7. Category await ─────────────────────────────────────────────────
       if (isAwaitingCategory(userId) && !isAnyTrigger(userMessage)) {
         const catResult = handleCategoryAwait(userId, userMessage);
-
         if (catResult.cancelled) {
           await sendReply(client, replyToken, catResult.reply);
           return;
         }
-
         const category = getLeadData(userId).product_interest ?? userMessage;
         const missing  = getMissingFields(userId, QUOTE_REQUIRED_FIELDS);
-
         if (missing.length > 0) {
-          const intro = `😊 ${category}\n\nขอข้อมูลเพิ่มเล็กน้อยครับ`;
+          const intro  = `😊 ${category}\n\nขอข้อมูลเพิ่มเล็กน้อยครับ`;
           const fieldQ = startFieldCapture(userId, missing, intro);
           await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
         } else {
-          await sendReply(
-            client, replyToken,
+          await sendReply(client, replyToken,
             `😊 ${category}\n\nข้อมูลครบแล้วครับ 👍\n\nต้องการดำเนินการอะไรต่อดีครับ?`,
             [
-              { label: '📊 ดูเบี้ยประมาณ',   text: 'เช็กเบี้ย' },
-              { label: '📞 ให้ติดต่อกลับ',    text: 'ติดต่อคุณจิราวัฒน์' },
+              { label: '📊 ดูเบี้ยประมาณ', text: 'เช็กเบี้ย' },
+              { label: '📞 ให้ติดต่อกลับ',  text: 'ติดต่อคุณจิราวัฒน์' },
             ]
           );
         }
@@ -230,24 +298,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 6. Goal capture (after phone) ─────────────────────────────────────
+      // ── 8. Goal capture ───────────────────────────────────────────────────
       if (isAwaitingGoal(userId) && !isQuoteTrigger(userMessage)) {
         const result = handleGoalAwait(userId, userMessage, displayName);
         await sendReply(client, replyToken, result.reply, result.quickReply);
-
         if (result.done && !result.cancelled) {
           const data    = getLeadData(userId);
           const payload = buildLeadPayload(userId, displayName, data);
-          await upsertLead({ ...payload, last_question: userMessage.substring(0, 300) }).catch(logCrmErr);
+          await upsertLead({
+            ...payload,
+            last_question: userMessage.substring(0, 300),
+            ...buildStatePayload(userId),
+          }).catch(logCrmErr);
         }
         return;
       }
 
-      // ── 7. Phone capture ──────────────────────────────────────────────────
+      // ── 9. Phone capture ──────────────────────────────────────────────────
       if (isAwaitingPhone(userId)) {
         if (isQuoteTrigger(userMessage) || isInterestTrigger(userMessage)) {
           cancelAwaitingPhone(userId);
-          // fall through to correct handler below
+          // fall through
         } else {
           const result = handlePhoneAwait(userId, userMessage);
           if (result.reply) {
@@ -257,6 +328,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                 line_user_id: userId, display_name: displayName,
                 phone: result.phoneCaptured, lead_status: 'interested',
                 follow_up_status: 'awaiting_goal',
+                ...buildStatePayload(userId),
               }).catch(logCrmErr);
             }
             return;
@@ -265,45 +337,48 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── 8. Interest trigger → show 6-category Quick Reply ─────────────────
+      // ── 10. Interest trigger → 6-category Quick Reply ─────────────────────
       if (isInterestTrigger(userMessage)) {
+        setLastIntent(userId, 'interest');
         const result = startCategoryFlow(userId);
         await sendReply(client, replyToken, result.reply, result.quickReply);
         return;
       }
 
-      // ── 9. Quote trigger → Premium Quote Flow ────────────────────────────
+      // ── 11. Quote trigger → Premium Quote Flow ────────────────────────────
       if (isQuoteTrigger(userMessage)) {
+        setLastIntent(userId, 'premium_quote');
         cancelAwaitingPhone(userId);
         const data    = getLeadData(userId);
         const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
         console.log(`[Lead] intent=premium_quote missing=${missing.join(',') || 'none'}`);
 
         if (missing.length === 0) {
-          // All 4 fields complete → show quote summary + save
           await sendReply(client, replyToken, buildQuoteSummary(data));
           await saveQuoteCrm(userId, displayName, userMessage);
         } else {
-          // Ask missing fields in premium_quote mode (context-aware messages)
           const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
           await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
         }
         return;
       }
 
-      // ── 10. Contact trigger → ask phone (only if not captured) ───────────
+      // ── 12. Contact trigger → ask phone ───────────────────────────────────
       if (isContactTrigger(userMessage) && !hasPhone(userId)) {
+        setLastIntent(userId, 'contact');
         const result = startPhoneAwait(userId);
         await sendReply(client, replyToken, result.reply);
         await upsertLead({
           line_user_id: userId, display_name: displayName,
           last_question: userMessage.substring(0, 300),
           lead_status: 'interested', follow_up_status: 'awaiting_phone',
+          ...buildStatePayload(userId),
         }).catch(logCrmErr);
         return;
       }
 
-      // ── 11. Normal OpenAI flow ────────────────────────────────────────────
+      // ── 13. Normal OpenAI flow ────────────────────────────────────────────
+      setLastIntent(userId, 'openai');
       const faqs         = await fetchFaq();
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
       const reply        = await getChatReply(userId, systemPrompt, userMessage);
@@ -316,6 +391,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   return NextResponse.json({ ok: true });
 }
 
+// ─── CRM save helpers ─────────────────────────────────────────────────────────
+
 async function saveQuoteCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
   const data = getLeadData(userId);
   console.log(`[CRM] quote save userId=${userId}`);
@@ -326,6 +403,7 @@ async function saveQuoteCrm(userId: string, displayName: string, lastMsg: string
     purchase_objective: 'เช็กเบี้ย/ขอใบเสนอราคา',
     follow_up_status: 'Quotation Requested',
     lead_status: data.phone ? 'hot' : 'warm',
+    ...buildStatePayload(userId),
   }).catch(logCrmErr);
 }
 
@@ -338,6 +416,7 @@ async function saveCrm(userId: string, displayName: string, lastMsg: string): Pr
     ...data,
     last_question: lastMsg.substring(0, 300),
     lead_status: hasPhone(userId) ? 'qualified' : 'new',
+    ...buildStatePayload(userId),
   }).catch(logCrmErr);
 }
 

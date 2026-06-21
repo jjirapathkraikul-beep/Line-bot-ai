@@ -28,6 +28,9 @@ export interface CaptureResponse {
   allCaptured?: boolean;
   done?: boolean;
   cancelled?: boolean;
+  resumed?: boolean;
+  reset?: boolean;
+  fallthrough?: boolean;
   mode?: string;
 }
 
@@ -48,10 +51,10 @@ export const FIELD_LABELS: Record<LeadField, string> = {
 // ─── Quick reply sets ─────────────────────────────────────────────────────────
 
 export const QR_GOALS: QuickReplyOption[] = [
-  { label: '1️⃣ ลดหย่อนภาษี',  text: 'ลดหย่อนภาษี' },
-  { label: '2️⃣ สุขภาพ',        text: 'ประกันสุขภาพ' },
-  { label: '3️⃣ มะเร็ง',        text: 'ประกันมะเร็ง' },
-  { label: '4️⃣ ลงทุน',         text: 'ลงทุนระยะยาว' },
+  { label: '1️⃣ ลดหย่อนภาษี', text: 'ลดหย่อนภาษี' },
+  { label: '2️⃣ สุขภาพ',       text: 'ประกันสุขภาพ' },
+  { label: '3️⃣ มะเร็ง',       text: 'ประกันมะเร็ง' },
+  { label: '4️⃣ ลงทุน',        text: 'ลงทุนระยะยาว' },
 ];
 
 export const QR_PRODUCTS: QuickReplyOption[] = [
@@ -59,7 +62,7 @@ export const QR_PRODUCTS: QuickReplyOption[] = [
   { label: 'Good Health Prime', text: 'Good Health Prime' },
   { label: 'Tokio Cancer Care', text: 'Tokio Cancer Care' },
   { label: 'Tokyo Beyond',      text: 'Tokyo Beyond' },
-  { label: 'ยังไม่แน่ใจ',       text: 'ยังไม่แน่ใจ' },
+  { label: 'ยังไม่แน่ใจ',      text: 'ยังไม่แน่ใจ' },
 ];
 
 export const QR_GENDER: QuickReplyOption[] = [
@@ -72,64 +75,83 @@ export const QR_AGE: QuickReplyOption[] = [
   { label: 'น้อยกว่า 30 ปี', text: 'ต่ำกว่า 30' },
   { label: '30–39 ปี',        text: '30-39' },
   { label: '40–49 ปี',        text: '40-49' },
-  { label: '50 ปีขึ้นไป',     text: '50+' },
+  { label: '50 ปีขึ้นไป',    text: '50+' },
 ];
 
-// 6 Insurance Category Quick Reply (for interest trigger)
 export const QR_INSURANCE_CATEGORIES: QuickReplyOption[] = [
-  { label: '1️⃣ สะสมทรัพย์',   text: 'ประกันชีวิตสะสมทรัพย์' },
-  { label: '2️⃣ ลดหย่อนภาษี',  text: 'ประกันลดหย่อนภาษี' },
-  { label: '3️⃣ เกษียณ',        text: 'ประกันเกษียณ' },
-  { label: '4️⃣ สุขภาพ',        text: 'ประกันสุขภาพ' },
-  { label: '5️⃣ โรคมะเร็ง',     text: 'ประกันมะเร็งและโรคร้ายแรง' },
-  { label: '6️⃣ Unit Linked',   text: 'ประกันควบการลงทุน Unit Linked' },
+  { label: '1️⃣ สะสมทรัพย์',  text: 'ประกันชีวิตสะสมทรัพย์' },
+  { label: '2️⃣ ลดหย่อนภาษี', text: 'ประกันลดหย่อนภาษี' },
+  { label: '3️⃣ เกษียณ',       text: 'ประกันเกษียณ' },
+  { label: '4️⃣ สุขภาพ',       text: 'ประกันสุขภาพ' },
+  { label: '5️⃣ โรคมะเร็ง',    text: 'ประกันมะเร็งและโรคร้ายแรง' },
+  { label: '6️⃣ Unit Linked',  text: 'ประกันควบการลงทุน Unit Linked' },
+];
+
+export const QR_RESUME: QuickReplyOption[] = [
+  { label: '✅ คุยต่อ',    text: 'คุยต่อ' },
+  { label: '🔄 เริ่มใหม่', text: 'เริ่มใหม่' },
 ];
 
 // ─── Trigger keyword groups ───────────────────────────────────────────────────
 
-// Contact triggers → need phone
 export const CONTACT_TRIGGERS = [
   'ติดต่อคุณจิราวัฒน์', 'ขอใบเสนอราคา', 'สนใจสมัคร',
   'ขอนัดคุย', 'ขอรายละเอียด', 'ให้ติดต่อกลับ', 'ติดต่อกลับ', 'นัดคุย',
 ];
 
-// Quote triggers → premium_quote flow (need product + age + gender + budget)
 export const QUOTE_TRIGGERS = [
   'ค่าเบี้ย', 'เช็กเบี้ย', 'เบี้ยเท่าไร', 'ราคาเท่าไร',
   'จ่ายเดือนละ', 'เบี้ยประกัน', 'ขอเบี้ย', 'คำนวณเบี้ย', 'ดูเบี้ย',
   'quote', 'quotation',
 ];
 
-// Interest triggers → show 6-category Quick Reply immediately
 export const INTEREST_TRIGGERS = [
   'สนใจทำประกัน', 'อยากทำประกัน', 'แนะนำประกัน', 'ประกันอะไรดี',
   'สนใจประกัน', 'อยากได้ประกัน',
 ];
 
 export const QUOTE_REQUIRED_FIELDS: LeadField[] = ['age', 'gender', 'product_interest'];
-// Fields collected before showing Premium Quote Summary
-export const PREMIUM_QUOTE_FIELDS: LeadField[] = ['product_interest', 'age', 'gender', 'budget'];
-export const SCORED_FIELDS: LeadField[] = ['age', 'gender', 'phone', 'product_interest', 'budget'];
+export const PREMIUM_QUOTE_FIELDS: LeadField[]  = ['product_interest', 'age', 'gender', 'budget'];
+export const SCORED_FIELDS: LeadField[]         = ['age', 'gender', 'phone', 'product_interest', 'budget'];
 
-const TIMEOUT_MS      = 30 * 60 * 1000;
+// State durations
+const TIMEOUT_MS           = 24 * 60 * 60 * 1000;  // 24h — field capture active window
+const STALE_STATE_MS       = 7  * 24 * 60 * 60 * 1000; // 7d — resume prompt eligibility
+const RESUME_PROMPT_MS     = 5  * 60 * 1000;        // 5min — user must respond to resume prompt
+
 const CANCEL_KEYWORDS = ['ยกเลิก', 'cancel', 'หยุด', 'ออก'];
 const ALL_INTENT_TRIGGERS = [...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS, ...INTEREST_TRIGGERS];
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
+// NOTE: All Maps are wiped on Vercel cold start (every ~few min of inactivity).
+// Field-level data (product/age/gender) is lost too.
+// Permanent solution: migrate to Vercel KV (see requirement 7 plan).
 
-const userLeadData    = new Map<string, ExtractedData>();
-const awaitingPhone   = new Map<string, { startedAt: number }>();
-const awaitingGoal    = new Map<string, { startedAt: number }>();
-const awaitingCategory= new Map<string, { startedAt: number }>();
-const awaitingField   = new Map<string, {
+const userLeadData     = new Map<string, ExtractedData>();
+const awaitingPhone    = new Map<string, { startedAt: number }>();
+const awaitingGoal     = new Map<string, { startedAt: number }>();
+const awaitingCategory = new Map<string, { startedAt: number }>();
+const awaitingResume   = new Map<string, { startedAt: number }>();
+const awaitingField    = new Map<string, {
   field: LeadField;
   queue: LeadField[];
   startedAt: number;
   mode: 'general' | 'premium_quote';
 }>();
 
-function alive(entry: { startedAt: number }): boolean {
-  return Date.now() - entry.startedAt < TIMEOUT_MS;
+// stateMetadata survives cancelAllCapture so resume works after flow ends
+interface StateMetadata {
+  lastState:    string;
+  lastIntent:   string;
+  stateUpdatedAt: number;
+  pendingField?:  LeadField;
+  pendingQueue?:  LeadField[];
+  pendingMode?:   'general' | 'premium_quote';
+}
+const stateMetadata = new Map<string, StateMetadata>();
+
+function alive(entry: { startedAt: number }, ms = TIMEOUT_MS): boolean {
+  return Date.now() - entry.startedAt < ms;
 }
 
 // ─── Normalizer ───────────────────────────────────────────────────────────────
@@ -138,57 +160,194 @@ function normTH(s: string): string {
   return s.normalize('NFC').toLowerCase();
 }
 
+// ─── State metadata helpers ───────────────────────────────────────────────────
+
+function saveStateMetadata(userId: string, updates: Partial<StateMetadata>): void {
+  const cur = stateMetadata.get(userId) ?? {
+    lastState: 'idle', lastIntent: 'none', stateUpdatedAt: Date.now(),
+  };
+  stateMetadata.set(userId, { ...cur, ...updates, stateUpdatedAt: Date.now() });
+}
+
+// Route.ts calls this when detecting an intent to keep lastIntent current
+export function setLastIntent(userId: string, intent: string): void {
+  saveStateMetadata(userId, { lastIntent: intent, lastState: getCurrentState(userId) });
+}
+
+export function getStateDebugInfo(userId: string): {
+  currentState:    string;
+  lastState:       string;
+  lastIntent:      string;
+  stateAgeMinutes: number;
+} {
+  const currentState = getCurrentState(userId);
+  const meta = stateMetadata.get(userId);
+  return {
+    currentState,
+    lastState:       meta?.lastState ?? 'unknown',
+    lastIntent:      meta?.lastIntent ?? 'unknown',
+    stateAgeMinutes: meta ? Math.round((Date.now() - meta.stateUpdatedAt) / 60000) : 0,
+  };
+}
+
 // ─── State introspection ──────────────────────────────────────────────────────
 
 export function isAwaitingField(userId: string): boolean {
   const e = awaitingField.get(userId);
   if (!e) return false;
-  if (!alive(e)) { awaitingField.delete(userId); return false; }
+  if (!alive(e, TIMEOUT_MS)) { awaitingField.delete(userId); return false; }
   return true;
 }
 
 export function isAwaitingPhone(userId: string): boolean {
   const e = awaitingPhone.get(userId);
   if (!e) return false;
-  if (!alive(e)) { awaitingPhone.delete(userId); return false; }
+  if (!alive(e, TIMEOUT_MS)) { awaitingPhone.delete(userId); return false; }
   return true;
 }
 
 export function isAwaitingGoal(userId: string): boolean {
   const e = awaitingGoal.get(userId);
   if (!e) return false;
-  if (!alive(e)) { awaitingGoal.delete(userId); return false; }
+  if (!alive(e, TIMEOUT_MS)) { awaitingGoal.delete(userId); return false; }
   return true;
 }
 
 export function isAwaitingCategory(userId: string): boolean {
   const e = awaitingCategory.get(userId);
   if (!e) return false;
-  if (!alive(e)) { awaitingCategory.delete(userId); return false; }
+  if (!alive(e, TIMEOUT_MS)) { awaitingCategory.delete(userId); return false; }
+  return true;
+}
+
+export function isAwaitingResume(userId: string): boolean {
+  const e = awaitingResume.get(userId);
+  if (!e) return false;
+  if (!alive(e, RESUME_PROMPT_MS)) { awaitingResume.delete(userId); return false; }
   return true;
 }
 
 export function getCurrentState(userId: string): string {
-  if (isAwaitingField(userId))    return 'awaiting_field';
+  if (isAwaitingField(userId))    return `awaiting_field:${awaitingField.get(userId)?.field ?? ''}`;
+  if (isAwaitingResume(userId))   return 'awaiting_resume';
   if (isAwaitingCategory(userId)) return 'awaiting_category';
   if (isAwaitingGoal(userId))     return 'awaiting_goal';
   if (isAwaitingPhone(userId))    return 'awaiting_phone';
   return 'idle';
 }
 
+// ─── Stale-state resume detection ────────────────────────────────────────────
+
+// True when: no active field capture, but stateMetadata has recent (≤7d) pending field
+export function hasExpiredStateForResume(userId: string): boolean {
+  if (isAwaitingField(userId)) return false;
+  if (isAwaitingResume(userId)) return false;
+  const meta = stateMetadata.get(userId);
+  if (!meta?.pendingField) return false;
+  return Date.now() - meta.stateUpdatedAt < STALE_STATE_MS;
+}
+
+// Try to silently auto-resume if user's message directly answers the pending field
+export function trySmartResume(userId: string, text: string): CaptureResponse | null {
+  if (isAwaitingField(userId)) return null;
+  const meta = stateMetadata.get(userId);
+  if (!meta?.pendingField) return null;
+  if (Date.now() - meta.stateUpdatedAt >= STALE_STATE_MS) return null;
+  if (!validateFieldInput(meta.pendingField, text)) return null;
+
+  // Silently restore field state and process the answer
+  awaitingField.set(userId, {
+    field: meta.pendingField,
+    queue: meta.pendingQueue ?? [],
+    startedAt: Date.now(),
+    mode: meta.pendingMode ?? 'general',
+  });
+  return handleFieldCapture(userId, text);
+}
+
+// Show the "คุยต่อ / เริ่มใหม่?" prompt
+export function startResumeFlow(userId: string): CaptureResponse {
+  awaitingResume.set(userId, { startedAt: Date.now() });
+  const meta = stateMetadata.get(userId);
+  const ageMs = meta ? Date.now() - meta.stateUpdatedAt : 0;
+  const ageH  = Math.round(ageMs / 3_600_000);
+  const ageD  = Math.round(ageH / 24);
+  const ageText = ageH < 1 ? 'เมื่อกี้' : ageH < 24 ? `${ageH} ชั่วโมงที่แล้ว` : `${ageD} วันที่แล้ว`;
+  const data    = userLeadData.get(userId) ?? {};
+  const product = data.product_interest ? ` (${data.product_interest})` : '';
+  const field   = meta?.pendingField ? ` กำลังถามเรื่อง${FIELD_LABELS[meta.pendingField]}` : '';
+
+  return {
+    reply: `ยังมีข้อมูลที่คุยค้างไว้ ${ageText}นะครับ${product}${field}\n\nคุณต้องการคุยต่อจากข้อมูลเดิม หรือเริ่มใหม่ครับ?`,
+    quickReply: QR_RESUME,
+  };
+}
+
+// Handle user's answer to the resume prompt
+export function handleResumeAwait(userId: string, text: string): CaptureResponse {
+  // Intent trigger while in resume prompt → cancel prompt, fall through
+  if (isAnyTrigger(text)) {
+    awaitingResume.delete(userId);
+    return { reply: '', fallthrough: true };
+  }
+
+  const n = normTH(text);
+  const isContinue = ['ต่อ', 'คุยต่อ', 'ต่อได้', 'ต่อเลย', 'yes', 'ใช่', 'ดำเนินการ'].some((kw) => n.includes(kw));
+  const isReset    = ['ใหม่', 'เริ่มใหม่', 'reset', 'no', 'ไม่', 'ล้าง'].some((kw) => n.includes(kw));
+
+  if (isContinue) {
+    awaitingResume.delete(userId);
+    const meta = stateMetadata.get(userId);
+    if (meta?.pendingField) {
+      awaitingField.set(userId, {
+        field:     meta.pendingField,
+        queue:     meta.pendingQueue ?? [],
+        startedAt: Date.now(),
+        mode:      meta.pendingMode ?? 'general',
+      });
+      const q = buildFieldQuestion(meta.pendingField, meta.pendingMode ?? 'general', userId);
+      return { ...q, resumed: true };
+    }
+    return { reply: 'รับทราบครับ ลองใหม่ได้เลยครับ 😊', done: true, resumed: true };
+  }
+
+  if (isReset) {
+    awaitingResume.delete(userId);
+    cancelAllCapture(userId);
+    clearLeadData(userId);
+    stateMetadata.delete(userId);
+    return { reply: 'รับทราบครับ 😊 เริ่มใหม่ได้เลยครับ!', reset: true, done: true };
+  }
+
+  // Unrecognised → cancel resume, fall through to normal processing
+  awaitingResume.delete(userId);
+  return { reply: '', fallthrough: true };
+}
+
 // ─── State management ─────────────────────────────────────────────────────────
 
-export function cancelFieldCapture(userId: string): void   { awaitingField.delete(userId); }
-export function cancelAwaitingPhone(userId: string): void  { awaitingPhone.delete(userId); }
+export function cancelFieldCapture(userId: string): void {
+  const state = awaitingField.get(userId);
+  if (state) {
+    saveStateMetadata(userId, { lastState: `awaiting_field:${state.field}`, pendingField: undefined });
+  }
+  awaitingField.delete(userId);
+}
+
+export function cancelAwaitingPhone(userId: string): void { awaitingPhone.delete(userId); }
 
 export function cancelAllCapture(userId: string): void {
+  const curState = getCurrentState(userId);
+  saveStateMetadata(userId, { lastState: curState, pendingField: undefined });
   awaitingField.delete(userId);
   awaitingPhone.delete(userId);
   awaitingGoal.delete(userId);
   awaitingCategory.delete(userId);
+  awaitingResume.delete(userId);
 }
 
-export function clearLeadData(userId: string): void { userLeadData.delete(userId); }
+export function clearLeadData(userId: string): void    { userLeadData.delete(userId); }
+export function clearStateMetadata(userId: string): void { stateMetadata.delete(userId); }
 
 // ─── Lead completeness ────────────────────────────────────────────────────────
 
@@ -222,9 +381,10 @@ export function extractFromText(text: string): Partial<ExtractedData> {
   const incM = text.match(/รายได้\s*([\d,]+)/) ?? text.match(/เงินเดือน\s*([\d,]+)/);
   if (incM) r.monthly_income = incM[1].replace(/,/g, '');
 
-  const bdgM = text.match(/งบประมาณ\s*([\d,]+)/) ??
-               text.match(/งบ\s+([\d,]+)/) ??
-               text.match(/([\d,]+)\s*บาท\/(?:เดือน|ปี)/);
+  const bdgM =
+    text.match(/งบประมาณ\s*([\d,]+)/) ??
+    text.match(/งบ\s+([\d,]+)/) ??
+    text.match(/([\d,]+)\s*บาท\/(?:เดือน|ปี)/);
   if (bdgM) r.budget = bdgM[1].replace(/,/g, '');
 
   const objM = text.match(/เป้าหมาย([฀-๿\d\s/]+?)(?=\s*(?:งบประมาณ|งบ\s|รายได้|อายุ|เงินเดือน|$))/);
@@ -324,14 +484,9 @@ function buildPremiumQuoteFieldQuestion(field: LeadField, data: ExtractedData): 
       };
     }
     case 'gender':
-      return {
-        reply: 'กรุณาเลือกเพศครับ',
-        quickReply: QR_GENDER,
-      };
+      return { reply: 'กรุณาเลือกเพศครับ', quickReply: QR_GENDER };
     case 'budget':
-      return {
-        reply: 'ขอทราบงบประมาณต่อปีครับ?\n\nเช่น 20,000 / 50,000 บาท/ปี',
-      };
+      return { reply: 'ขอทราบงบประมาณต่อปีครับ?\n\nเช่น 20,000 / 50,000 บาท/ปี' };
     default:
       return buildGeneralFieldQuestion(field);
   }
@@ -383,7 +538,6 @@ function normalizeFieldValue(field: LeadField, text: string): string {
   return text.trim();
 }
 
-// intro: optional preamble merged into first question (keeps replyToken used only ONCE)
 export function startFieldCapture(
   userId: string,
   missingFields: LeadField[],
@@ -393,7 +547,13 @@ export function startFieldCapture(
   if (missingFields.length === 0) return { reply: '', done: true, mode };
   const [first, ...rest] = missingFields;
   awaitingField.set(userId, { field: first, queue: rest, startedAt: Date.now(), mode });
-  const q = buildFieldQuestion(first, mode, userId);
+  saveStateMetadata(userId, {
+    lastState:    `awaiting_field:${first}`,
+    pendingField: first,
+    pendingQueue: rest,
+    pendingMode:  mode,
+  });
+  const q     = buildFieldQuestion(first, mode, userId);
   const reply = intro ? `${intro}\n\n${q.reply}` : q.reply;
   return { ...q, reply };
 }
@@ -404,11 +564,11 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
 
   if (CANCEL_KEYWORDS.some((kw) => text.includes(kw))) {
     awaitingField.delete(userId);
+    saveStateMetadata(userId, { lastState: `awaiting_field:${state.field}`, pendingField: undefined });
     return { reply: 'รับทราบครับ 😊', cancelled: true, done: true, mode: state.mode };
   }
 
   if (!validateFieldInput(state.field, text)) {
-    // re-ask same question in same mode
     return buildFieldQuestion(state.field, state.mode, userId);
   }
 
@@ -418,11 +578,17 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
   if (state.queue.length > 0) {
     const [next, ...remaining] = state.queue;
     awaitingField.set(userId, { ...state, field: next, queue: remaining, startedAt: Date.now() });
-    // Pass updated userId data (just saved above) for context-aware next question
+    saveStateMetadata(userId, {
+      lastState:    `awaiting_field:${next}`,
+      pendingField: next,
+      pendingQueue: remaining,
+      pendingMode:  state.mode,
+    });
     return buildFieldQuestion(next, state.mode, userId);
   }
 
   awaitingField.delete(userId);
+  saveStateMetadata(userId, { lastState: `field_complete`, pendingField: undefined });
   return { reply: '', done: true, allCaptured: true, mode: state.mode };
 }
 
@@ -444,7 +610,7 @@ export function handleCategoryAwait(userId: string, text: string): CaptureRespon
   awaitingCategory.delete(userId);
   const category = PRODUCT_MAP[text.trim()] ?? text.trim();
   accumulateLeadData(userId, { product_interest: category });
-  return { reply: '' }; // caller builds next step
+  return { reply: '' };
 }
 
 // ─── Phone → Goal flow ────────────────────────────────────────────────────────
@@ -493,7 +659,7 @@ export function handleGoalAwait(userId: string, text: string, displayName: strin
   return { reply: buildSummary(displayName, data, score, total), done: true };
 }
 
-// ─── Summary ──────────────────────────────────────────────────────────────────
+// ─── Summary builders ─────────────────────────────────────────────────────────
 
 export function buildSummary(
   displayName: string,
@@ -520,8 +686,6 @@ export function buildSummary(
     'คุณจิราวัฒน์จะติดต่อกลับเร็วๆ นี้ครับ 🙏'
   );
 }
-
-// ─── Premium Quote Summary ────────────────────────────────────────────────────
 
 export function buildQuoteSummary(data: ExtractedData): string {
   const f   = (v?: string) => v || '-';
@@ -552,5 +716,15 @@ export function buildLeadPayload(userId: string, displayName: string, data: Extr
     budget: data.budget ?? '', preferred_contact_time: data.preferred_contact_time ?? '',
     lead_status: 'qualified', follow_up_status: 'pending',
     last_contact_date: today, first_contact_date: today,
+  };
+}
+
+// Convenience: build CRM state fields for any upsert call
+export function buildStatePayload(userId: string): Pick<LeadUpsert, 'current_state' | 'last_intent' | 'state_updated_at'> {
+  const debug = getStateDebugInfo(userId);
+  return {
+    current_state:    debug.currentState,
+    last_intent:      debug.lastIntent,
+    state_updated_at: new Date().toISOString(),
   };
 }

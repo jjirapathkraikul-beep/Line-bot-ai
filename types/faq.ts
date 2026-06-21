@@ -22,6 +22,9 @@ export interface Lead {
   follow_up_status: string;
   last_question: string;
   conversation_summary: string;
+  current_state: string;
+  last_intent: string;
+  state_updated_at: string;
   first_contact_date: string;
   last_contact_date: string;
   // legacy fields kept for backward compat
