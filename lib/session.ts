@@ -42,10 +42,19 @@ function isKvConfigured(): boolean {
 }
 
 async function kvGet(userId: string): Promise<UserSession | null> {
-  if (!isKvConfigured()) return memStore.get(userId) ?? null;
+  const uid = userId.substring(0, 8) + '***';
+  if (!isKvConfigured()) {
+    const hit = memStore.has(userId);
+    // [DIAG-KV] temporary — remove after verification
+    console.log(`[Session] mode=memory connected=false read=${hit ? 'hit' : 'miss'} uid=${uid}`);
+    return memStore.get(userId) ?? null;
+  }
   try {
     const { kv } = await import('@vercel/kv');
-    return await kv.get<UserSession>(KV_KEY(userId));
+    const result = await kv.get<UserSession>(KV_KEY(userId));
+    // [DIAG-KV] temporary — remove after verification
+    console.log(`[Session] mode=kv connected=true read=${result ? 'hit' : 'miss'} uid=${uid}`);
+    return result;
   } catch (err) {
     console.error('[Session] KV get error:', err instanceof Error ? err.message : String(err));
     return memStore.get(userId) ?? null;
@@ -53,10 +62,13 @@ async function kvGet(userId: string): Promise<UserSession | null> {
 }
 
 async function kvSet(userId: string, session: UserSession): Promise<void> {
+  const uid = userId.substring(0, 8) + '***';
   if (!isKvConfigured()) { memStore.set(userId, session); return; }
   try {
     const { kv } = await import('@vercel/kv');
     await kv.set(KV_KEY(userId), session, { ex: KV_TTL });
+    // [DIAG-KV] temporary — remove after verification
+    console.log(`[Session] mode=kv write=ok uid=${uid}`);
   } catch (err) {
     console.error('[Session] KV set error:', err instanceof Error ? err.message : String(err));
     memStore.set(userId, session); // fallback on KV failure
