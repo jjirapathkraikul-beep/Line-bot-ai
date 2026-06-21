@@ -173,6 +173,10 @@ export function cancelAllCapture(userId: string): void {
   awaitingGoal.delete(userId);
 }
 
+export function clearLeadData(userId: string): void {
+  userLeadData.delete(userId);
+}
+
 // ─── Lead completeness ────────────────────────────────────────────────────────
 
 export function getMissingFields(

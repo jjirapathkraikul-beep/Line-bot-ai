@@ -5,6 +5,7 @@ import { fetchFaq } from '@/lib/sheet';
 import { buildSystemPrompt } from '@/lib/prompt';
 import { getChatReply } from '@/lib/openai';
 import { upsertLead } from '@/lib/lead';
+import { isAdmin, isAdminCommand, handleAdminCommand } from '@/lib/admin';
 import {
   extractFromText,
   accumulateLeadData,
@@ -141,7 +142,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       accumulateLeadData(userId, extractFromText(userMessage));
       const displayName = await getDisplayName(client, userId);
 
-      // ── 2. Log current state ──────────────────────────────────────────────
+      // ── 2. Admin commands (#reset / #debug / #whoami / #help) ─────────────
+      if (isAdminCommand(userMessage)) {
+        if (isAdmin(userId)) {
+          const result = handleAdminCommand(userId, userMessage, displayName);
+          await sendReply(client, replyToken, result.reply);
+        } else {
+          await sendReply(client, replyToken, 'คำสั่งนี้ใช้ได้เฉพาะผู้ดูแลระบบครับ');
+        }
+        return;
+      }
+
+      // ── 4. Log current state ──────────────────────────────────────────────
       const { score, total, missing: missingScored } = getLeadCompleteness(userId);
       const state = getCurrentState(userId);
       const isQT  = isQuoteTrigger(userMessage);
@@ -155,7 +167,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         ` hex=${msgHex}`
       );
 
-      // ── 3. Targeted field capture ─────────────────────────────────────────
+      // ── 5. Targeted field capture ─────────────────────────────────────────
       if (isAwaitingField(userId)) {
         // If user changed intent mid-flow, cancel capture and process new intent
         if (isAnyTrigger(userMessage)) {
@@ -181,7 +193,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── 4. Goal capture (after phone) ─────────────────────────────────────
+      // ── 6. Goal capture (after phone) ─────────────────────────────────────
       if (isAwaitingGoal(userId) && !isQuoteTrigger(userMessage)) {
         const result = handleGoalAwait(userId, userMessage, displayName);
         await sendReply(client, replyToken, result.reply, result.quickReply);
@@ -194,7 +206,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 5. Phone capture ──────────────────────────────────────────────────
+      // ── 7. Phone capture ──────────────────────────────────────────────────
       if (isAwaitingPhone(userId)) {
         // If user switched to quote intent, clear phone state and fall through
         if (isQuoteTrigger(userMessage)) {
@@ -219,7 +231,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── 6. Quote trigger: เช็กเบี้ย / คำนวณเบี้ย ─────────────────────────
+      // ── 8. Quote trigger: เช็กเบี้ย / คำนวณเบี้ย ─────────────────────────
       if (isQuoteTrigger(userMessage)) {
         cancelAwaitingPhone(userId); // Clear any stale phone-await state
 
@@ -260,7 +272,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── 7. Contact trigger → ask phone (only if not already captured) ─────
+      // ── 9. Contact trigger → ask phone (only if not already captured) ─────
       if (isContactTrigger(userMessage) && !hasPhone(userId)) {
         const result = startPhoneAwait(userId);
         await sendReply(client, replyToken, result.reply);
@@ -272,7 +284,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 8. Normal OpenAI flow ─────────────────────────────────────────────
+      // ── 10. Normal OpenAI flow ────────────────────────────────────────────
       const faqs = await fetchFaq();
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
       const reply = await getChatReply(userId, systemPrompt, userMessage);
