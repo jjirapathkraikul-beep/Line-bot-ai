@@ -161,14 +161,63 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       accumulateLeadData(userId, extractFromText(userMessage));
       const displayName = await getDisplayName(client, userId);
 
-      // ── 2. Admin commands (#reset / #debug / #whoami / #help) ─────────────
+      // ── 2. Admin commands (#reset / #debug / #whoami / #testnotify / #help) ─
       if (isAdminCommand(userMessage)) {
-        if (isAdmin(userId)) {
-          const result = handleAdminCommand(userId, userMessage, displayName);
-          await sendReply(client, replyToken, result.reply);
-        } else {
+        if (!isAdmin(userId)) {
           await sendReply(client, replyToken, 'คำสั่งนี้ใช้ได้เฉพาะผู้ดูแลระบบครับ');
+          return;
         }
+
+        // #testnotify — async, handled here before the sync handler
+        if (userMessage.trim().toLowerCase() === '#testnotify') {
+          console.log(`[Admin] command=#testnotify userId=${userId.substring(0, 8)}***`);
+          const mockData = {
+            real_name: 'ทดสอบระบบ', age: '35', gender: 'ชาย',
+            phone: '0812345678', preferred_contact_time: 'ช่วงเช้า 09:00-12:00',
+            product_interest: 'ประกันสุขภาพ', budget: '5000',
+          };
+          const adminId = process.env.ADMIN_LINE_USER_ID ?? '';
+          const token   = process.env.LINE_CHANNEL_ACCESS_TOKEN ?? '';
+          if (!adminId || !token) {
+            await sendReply(client, replyToken, '❌ ADMIN_LINE_USER_ID หรือ LINE_CHANNEL_ACCESS_TOKEN ยังไม่ได้ตั้งค่าครับ');
+            return;
+          }
+          try {
+            // Bypass dedup for test: call pushMessage directly
+            const { Client: LineClient } = await import('@line/bot-sdk');
+            const lc = new LineClient({ channelAccessToken: token });
+            const score = 80;
+            const text  = [
+              '🔥 HOT LEAD เข้าใหม่ [TEST]',
+              '',
+              `👤 ชื่อ: ${mockData.real_name} (Admin Test)`,
+              `🎂 อายุ: ${mockData.age} ปี`,
+              `🚻 เพศ: ${mockData.gender}`,
+              `📞 เบอร์: ${mockData.phone}`,
+              `🕒 เวลาสะดวก: ${mockData.preferred_contact_time}`,
+              `📌 สนใจ: ${mockData.product_interest}`,
+              `⭐ Lead Score: ${score}/100`,
+              `📍 Lead Status: HOT`,
+              '',
+              '📝 สรุป:',
+              'สนใจ: ประกันสุขภาพ | ช่วงเวลา: ช่วงเช้า 09:00-12:00 | ทดสอบระบบแจ้งเตือน',
+              '',
+              '✅ แนะนำให้ติดต่อกลับทันที',
+            ].join('\n');
+            await lc.pushMessage(adminId, { type: 'text', text });
+            await sendReply(client, replyToken,
+              '✅ ส่งการแจ้งเตือนทดสอบไปแล้วครับ\n\nตรวจสอบ LINE ส่วนตัวของ Admin ได้เลยครับ'
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[Admin] #testnotify failed: ${msg}`);
+            await sendReply(client, replyToken, `❌ ส่งไม่สำเร็จ: ${msg}`);
+          }
+          return;
+        }
+
+        const result = handleAdminCommand(userId, userMessage, displayName);
+        await sendReply(client, replyToken, result.reply);
         return;
       }
 

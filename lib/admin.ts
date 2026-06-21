@@ -91,10 +91,11 @@ export function handleAdminCommand(
         reply: [
           '📋 Admin Commands',
           '',
-          '#reset  — ล้าง session + lead data',
-          '#debug  — แสดง state + missing fields + lead data',
-          '#whoami — แสดง userId + role',
-          '#help   — แสดงคำสั่งทั้งหมด',
+          '#reset       — ล้าง session + lead data',
+          '#debug       — แสดง state + missing fields + lead data',
+          '#whoami      — แสดง userId + role',
+          '#testnotify  — ทดสอบส่งแจ้งเตือน HOT LEAD ไป LINE Admin',
+          '#help        — แสดงคำสั่งทั้งหมด',
         ].join('\n'),
         handled: true,
       };
