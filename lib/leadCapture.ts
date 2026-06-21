@@ -232,16 +232,23 @@ export function hasPhone(userId: string): boolean {
 
 // ─── Trigger checks ───────────────────────────────────────────────────────────
 
+function normTH(s: string): string {
+  return s.normalize('NFC').toLowerCase();
+}
+
 export function isContactTrigger(text: string): boolean {
-  return CONTACT_TRIGGERS.some((kw) => text.includes(kw));
+  const n = normTH(text);
+  return CONTACT_TRIGGERS.some((kw) => n.includes(normTH(kw)));
 }
 
 export function isQuoteTrigger(text: string): boolean {
-  return QUOTE_TRIGGERS.some((kw) => text.includes(kw));
+  const n = normTH(text);
+  return QUOTE_TRIGGERS.some((kw) => n.includes(normTH(kw)));
 }
 
 export function isAnyTrigger(text: string): boolean {
-  return ALL_INTENT_TRIGGERS.some((kw) => text.includes(kw));
+  const n = normTH(text);
+  return ALL_INTENT_TRIGGERS.some((kw) => n.includes(normTH(kw)));
 }
 
 // ─── Existing data summary (shown before asking missing fields) ───────────────

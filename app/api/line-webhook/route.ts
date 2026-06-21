@@ -35,6 +35,13 @@ import {
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
+const CODE_VERSION = 'b8e5698-v4';
+
+// GET: version probe — curl this to verify which code is deployed
+export async function GET(): Promise<NextResponse> {
+  return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
+}
+
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
 const rateLimitMap     = new Map<string, { count: number; resetAt: number }>();
@@ -136,10 +143,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // ── 2. Log current state ──────────────────────────────────────────────
       const { score, total, missing: missingScored } = getLeadCompleteness(userId);
       const state = getCurrentState(userId);
+      const isQT  = isQuoteTrigger(userMessage);
+      const isCT  = isContactTrigger(userMessage);
+      const msgHex = Buffer.from(userMessage, 'utf8').toString('hex').substring(0, 60);
       console.log(
-        `[Lead] state=${state} score=${score}/${total}` +
+        `[Lead] v=${CODE_VERSION} state=${state} score=${score}/${total}` +
+        ` isQuote=${isQT} isContact=${isCT}` +
         ` missing_scored=${missingScored.join(',') || 'none'}` +
-        ` msg="${userMessage.substring(0, 40)}"`
+        ` msg="${userMessage.substring(0, 40)}"` +
+        ` hex=${msgHex}`
       );
 
       // ── 3. Targeted field capture ─────────────────────────────────────────
