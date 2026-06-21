@@ -106,6 +106,7 @@ export const QR_RESUME: QuickReplyOption[] = [
 export const CONTACT_TRIGGERS = [
   'ติดต่อคุณจิราวัฒน์', 'ขอใบเสนอราคา', 'สนใจสมัคร',
   'ขอนัดคุย', 'ขอรายละเอียด', 'ให้ติดต่อกลับ', 'ติดต่อกลับ', 'นัดคุย',
+  'สมัครเลย', 'คุยกับคุณจิราวัฒน์',
 ];
 
 export const QUOTE_TRIGGERS = [

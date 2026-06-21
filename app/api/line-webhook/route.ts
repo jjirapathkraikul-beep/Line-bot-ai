@@ -6,6 +6,7 @@ import { buildSystemPrompt } from '@/lib/prompt';
 import { getChatReply } from '@/lib/openai';
 import { upsertLead } from '@/lib/lead';
 import { isAdmin, isAdminCommand, handleAdminCommand } from '@/lib/admin';
+import { notifyAdminIfNeeded, shouldNotifyHighScore } from '@/lib/adminNotify';
 import {
   extractFromText,
   accumulateLeadData,
@@ -53,7 +54,7 @@ export const dynamic    = 'force-dynamic';
 export const maxDuration = 30;
 
 // ─── Version probe ────────────────────────────────────────────────────────────
-const CODE_VERSION = 'v10-handoff-fix';
+const CODE_VERSION = 'v11-admin-notify';
 
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
@@ -243,7 +244,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
           if (result.reply) {
             await sendReply(client, replyToken, result.reply, result.quickReply);
-            // Partial CRM save after phone is captured mid-flow (req #2)
+            // Partial CRM + admin notification after phone is captured mid-flow
             if (result.capturedField === 'phone') {
               const d = getLeadData(userId);
               await upsertLead({
@@ -251,6 +252,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                 phone: d.phone ?? '', follow_up_status: 'Collecting Info',
                 ...buildStatePayload(userId),
               }).catch(logCrmErr);
+              notifyAdminIfNeeded(userId, displayName, d, 'phone_first').catch(logNotifyErr);
             }
           } else if (result.done && result.allCaptured) {
             await handleAllCaptured(result.mode, userId, displayName, userMessage, client, replyToken);
@@ -338,6 +340,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         const data    = getLeadData(userId);
         const missing = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
         console.log(`[Lead] intent=handoff missing=${missing.join(',') || 'none'}`);
+
+        // Immediate admin alert for high-intent trigger words
+        const msgN = userMessage.normalize('NFC').toLowerCase();
+        const HIGH_INTENT = ['สมัครเลย', 'คุยกับคุณจิราวัฒน์'];
+        if (HIGH_INTENT.some((w) => msgN.includes(w.normalize('NFC').toLowerCase()))) {
+          notifyAdminIfNeeded(userId, displayName, data, 'trigger_word').catch(logNotifyErr);
+        }
 
         if (missing.length === 0) {
           await sendReply(client, replyToken, buildHandoffSummary(data));
@@ -441,6 +450,8 @@ async function saveHandoffCrm(userId: string, displayName: string, lastMsg: stri
     lead_status: 'hot',
     ...buildStatePayload(userId),
   }).catch(logCrmErr);
+  // Admin notification — fire-and-forget, never blocks customer reply
+  notifyAdminIfNeeded(userId, displayName, data, 'handoff_complete').catch(logNotifyErr);
 }
 
 async function saveCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
@@ -454,8 +465,16 @@ async function saveCrm(userId: string, displayName: string, lastMsg: string): Pr
     lead_status: hasPhone(userId) ? 'qualified' : 'new',
     ...buildStatePayload(userId),
   }).catch(logCrmErr);
+  // Notify admin if lead score crosses 70 for the first time
+  if (shouldNotifyHighScore(data)) {
+    notifyAdminIfNeeded(userId, displayName, data, 'score_high').catch(logNotifyErr);
+  }
 }
 
 function logCrmErr(err: unknown): void {
   console.error(`[CRM] save error: ${err instanceof Error ? err.message : String(err)}`);
+}
+
+function logNotifyErr(err: unknown): void {
+  console.error(`[Handoff] notify error: ${err instanceof Error ? err.message : String(err)}`);
 }

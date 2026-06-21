@@ -21,6 +21,8 @@ const CRM_FIELDS: Array<keyof LeadUpsert> = [
   'conversation_summary',
   'first_contact_date',
   'last_contact_date',
+  'handoff_notified_at',
+  'handoff_reason',
 ];
 
 export async function upsertLead(data: LeadUpsert): Promise<void> {

@@ -27,6 +27,8 @@ export interface Lead {
   state_updated_at: string;
   first_contact_date: string;
   last_contact_date: string;
+  handoff_notified_at: string;
+  handoff_reason: string;
   // legacy fields kept for backward compat
   occupation: string;
   tax_bracket: string;
