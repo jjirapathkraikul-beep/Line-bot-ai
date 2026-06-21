@@ -18,7 +18,7 @@ import {
   isQuoteTrigger,
   isInterestTrigger,
   isAnyTrigger,
-  QUOTE_REQUIRED_FIELDS,
+  PREMIUM_QUOTE_FIELDS,
   isAwaitingPhone,
   startPhoneAwait,
   handlePhoneAwait,
@@ -33,8 +33,7 @@ import {
   cancelFieldCapture,
   cancelAwaitingPhone,
   buildLeadPayload,
-  buildExistingDataSummary,
-  FIELD_LABELS,
+  buildQuoteSummary,
   QR_INSURANCE_CATEGORIES,
   type QuickReplyOption,
 } from '@/lib/leadCapture';
@@ -42,7 +41,7 @@ import {
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
-const CODE_VERSION = 'b8e5698-v5';
+const CODE_VERSION = 'b8e5698-v6';
 
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
@@ -182,12 +181,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           if (result.reply) {
             await sendReply(client, replyToken, result.reply, result.quickReply);
           } else if (result.done && result.allCaptured) {
-            const { score: s, total: t } = getLeadCompleteness(userId);
-            await sendReply(
-              client, replyToken,
-              `✅ ข้อมูลครบแล้วครับ (${s}/${t})\n\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊`
-            );
-            await saveCrm(userId, displayName, userMessage);
+            if (result.mode === 'premium_quote') {
+              const data = getLeadData(userId);
+              await sendReply(client, replyToken, buildQuoteSummary(data));
+              await saveQuoteCrm(userId, displayName, userMessage);
+            } else {
+              const { score: s, total: t } = getLeadCompleteness(userId);
+              await sendReply(
+                client, replyToken,
+                `✅ ข้อมูลครบแล้วครับ (${s}/${t})\n\nสอบถามเรื่องเบี้ยหรือแผนประกันได้เลยครับ 😊`
+              );
+              await saveCrm(userId, displayName, userMessage);
+            }
           } else if (result.done && result.cancelled) {
             await sendReply(client, replyToken, result.reply);
           }
@@ -267,28 +272,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 9. Quote trigger (เช็กเบี้ย) ──────────────────────────────────────
+      // ── 9. Quote trigger → Premium Quote Flow ────────────────────────────
       if (isQuoteTrigger(userMessage)) {
         cancelAwaitingPhone(userId);
         const data    = getLeadData(userId);
-        const missing = getMissingFields(userId, QUOTE_REQUIRED_FIELDS);
-        const { score: qs, total: qt } = getLeadCompleteness(userId);
-        console.log(`[Lead] intent=quote missing_required=${missing.join(',') || 'none'} score=${qs}/${qt}`);
+        const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
+        console.log(`[Lead] intent=premium_quote missing=${missing.join(',') || 'none'}`);
 
         if (missing.length === 0) {
-          // All required fields present → OpenAI answers with context
-          console.log(`[Lead] Quote complete — routing to OpenAI`);
-          // fall through
+          // All 4 fields complete → show quote summary + save
+          await sendReply(client, replyToken, buildQuoteSummary(data));
+          await saveQuoteCrm(userId, displayName, userMessage);
         } else {
-          const existingSummary = buildExistingDataSummary(data);
-          const missingLabel    = missing.map((f) => FIELD_LABELS[f]).join(', ');
-          const intro = existingSummary
-            ? `😊 ยินดีช่วยครับ\n\nมีข้อมูลแล้ว:\n${existingSummary}`
-            : `😊 ยินดีช่วยเช็กเบี้ยครับ`;
-          const fieldQ = startFieldCapture(userId, missing, intro);
+          // Ask missing fields in premium_quote mode (context-aware messages)
+          const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
           await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
-          return;
         }
+        return;
       }
 
       // ── 10. Contact trigger → ask phone (only if not captured) ───────────
@@ -314,6 +314,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   );
 
   return NextResponse.json({ ok: true });
+}
+
+async function saveQuoteCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
+  const data = getLeadData(userId);
+  console.log(`[CRM] quote save userId=${userId}`);
+  await upsertLead({
+    line_user_id: userId, display_name: displayName,
+    ...data,
+    last_question: lastMsg.substring(0, 300),
+    purchase_objective: 'เช็กเบี้ย/ขอใบเสนอราคา',
+    follow_up_status: 'Quotation Requested',
+    lead_status: data.phone ? 'hot' : 'warm',
+  }).catch(logCrmErr);
 }
 
 async function saveCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {

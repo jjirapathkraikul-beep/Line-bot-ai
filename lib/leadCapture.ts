@@ -28,6 +28,7 @@ export interface CaptureResponse {
   allCaptured?: boolean;
   done?: boolean;
   cancelled?: boolean;
+  mode?: string;
 }
 
 // ─── Field labels (Thai) ──────────────────────────────────────────────────────
@@ -92,9 +93,11 @@ export const CONTACT_TRIGGERS = [
   'ขอนัดคุย', 'ขอรายละเอียด', 'ให้ติดต่อกลับ', 'ติดต่อกลับ', 'นัดคุย',
 ];
 
-// Quote triggers → need age + gender + product (NOT phone)
+// Quote triggers → premium_quote flow (need product + age + gender + budget)
 export const QUOTE_TRIGGERS = [
-  'เช็กเบี้ย', 'คำนวณเบี้ย', 'เบี้ยประกัน', 'ดูเบี้ย',
+  'ค่าเบี้ย', 'เช็กเบี้ย', 'เบี้ยเท่าไร', 'ราคาเท่าไร',
+  'จ่ายเดือนละ', 'เบี้ยประกัน', 'ขอเบี้ย', 'คำนวณเบี้ย', 'ดูเบี้ย',
+  'quote', 'quotation',
 ];
 
 // Interest triggers → show 6-category Quick Reply immediately
@@ -104,6 +107,8 @@ export const INTEREST_TRIGGERS = [
 ];
 
 export const QUOTE_REQUIRED_FIELDS: LeadField[] = ['age', 'gender', 'product_interest'];
+// Fields collected before showing Premium Quote Summary
+export const PREMIUM_QUOTE_FIELDS: LeadField[] = ['product_interest', 'age', 'gender', 'budget'];
 export const SCORED_FIELDS: LeadField[] = ['age', 'gender', 'phone', 'product_interest', 'budget'];
 
 const TIMEOUT_MS      = 30 * 60 * 1000;
@@ -120,6 +125,7 @@ const awaitingField   = new Map<string, {
   field: LeadField;
   queue: LeadField[];
   startedAt: number;
+  mode: 'general' | 'premium_quote';
 }>();
 
 function alive(entry: { startedAt: number }): boolean {
@@ -285,7 +291,7 @@ export function buildExistingDataSummary(data: ExtractedData): string {
 
 // ─── Targeted field capture ───────────────────────────────────────────────────
 
-function buildFieldQuestion(field: LeadField): CaptureResponse {
+function buildGeneralFieldQuestion(field: LeadField): CaptureResponse {
   switch (field) {
     case 'age':
       return { reply: '😊 ขอทราบอายุด้วยครับ\n\nประมาณกี่ปีครับ?', quickReply: QR_AGE };
@@ -300,6 +306,46 @@ function buildFieldQuestion(field: LeadField): CaptureResponse {
     default:
       return { reply: '' };
   }
+}
+
+function buildPremiumQuoteFieldQuestion(field: LeadField, data: ExtractedData): CaptureResponse {
+  const product = data.product_interest;
+  switch (field) {
+    case 'product_interest':
+      return {
+        reply: 'ได้เลยครับ 😊\nขอทราบก่อนว่าสนใจแผนไหนครับ?',
+        quickReply: QR_INSURANCE_CATEGORIES,
+      };
+    case 'age': {
+      const productLine = product ? `สำหรับ ${product} เบี้ยขึ้นกับอายุและเพศ\n\n` : '';
+      return {
+        reply: `ได้เลยครับ 😊\n${productLine}ขอทราบอายุของผู้เอาประกันก่อนครับ (เช่น 35)`,
+        quickReply: QR_AGE,
+      };
+    }
+    case 'gender':
+      return {
+        reply: 'กรุณาเลือกเพศครับ',
+        quickReply: QR_GENDER,
+      };
+    case 'budget':
+      return {
+        reply: 'ขอทราบงบประมาณต่อปีครับ?\n\nเช่น 20,000 / 50,000 บาท/ปี',
+      };
+    default:
+      return buildGeneralFieldQuestion(field);
+  }
+}
+
+function buildFieldQuestion(
+  field: LeadField,
+  mode: 'general' | 'premium_quote',
+  userId: string
+): CaptureResponse {
+  if (mode === 'premium_quote') {
+    return buildPremiumQuoteFieldQuestion(field, userLeadData.get(userId) ?? {});
+  }
+  return buildGeneralFieldQuestion(field);
 }
 
 function validateFieldInput(field: LeadField, text: string): boolean {
@@ -341,12 +387,13 @@ function normalizeFieldValue(field: LeadField, text: string): string {
 export function startFieldCapture(
   userId: string,
   missingFields: LeadField[],
-  intro?: string
+  intro?: string,
+  mode: 'general' | 'premium_quote' = 'general'
 ): CaptureResponse {
-  if (missingFields.length === 0) return { reply: '', done: true };
+  if (missingFields.length === 0) return { reply: '', done: true, mode };
   const [first, ...rest] = missingFields;
-  awaitingField.set(userId, { field: first, queue: rest, startedAt: Date.now() });
-  const q = buildFieldQuestion(first);
+  awaitingField.set(userId, { field: first, queue: rest, startedAt: Date.now(), mode });
+  const q = buildFieldQuestion(first, mode, userId);
   const reply = intro ? `${intro}\n\n${q.reply}` : q.reply;
   return { ...q, reply };
 }
@@ -357,11 +404,12 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
 
   if (CANCEL_KEYWORDS.some((kw) => text.includes(kw))) {
     awaitingField.delete(userId);
-    return { reply: 'รับทราบครับ 😊', cancelled: true, done: true };
+    return { reply: 'รับทราบครับ 😊', cancelled: true, done: true, mode: state.mode };
   }
 
   if (!validateFieldInput(state.field, text)) {
-    return buildFieldQuestion(state.field); // re-ask same question
+    // re-ask same question in same mode
+    return buildFieldQuestion(state.field, state.mode, userId);
   }
 
   const value = normalizeFieldValue(state.field, text);
@@ -369,12 +417,13 @@ export function handleFieldCapture(userId: string, text: string): CaptureRespons
 
   if (state.queue.length > 0) {
     const [next, ...remaining] = state.queue;
-    awaitingField.set(userId, { field: next, queue: remaining, startedAt: Date.now() });
-    return buildFieldQuestion(next);
+    awaitingField.set(userId, { ...state, field: next, queue: remaining, startedAt: Date.now() });
+    // Pass updated userId data (just saved above) for context-aware next question
+    return buildFieldQuestion(next, state.mode, userId);
   }
 
   awaitingField.delete(userId);
-  return { reply: '', done: true, allCaptured: true };
+  return { reply: '', done: true, allCaptured: true, mode: state.mode };
 }
 
 // ─── Interest → Category flow ─────────────────────────────────────────────────
@@ -470,6 +519,25 @@ export function buildSummary(
     `🕒 เวลาสะดวก: ${f(data.preferred_contact_time)}\n\n` +
     'คุณจิราวัฒน์จะติดต่อกลับเร็วๆ นี้ครับ 🙏'
   );
+}
+
+// ─── Premium Quote Summary ────────────────────────────────────────────────────
+
+export function buildQuoteSummary(data: ExtractedData): string {
+  const f   = (v?: string) => v || '-';
+  const bdg = data.budget ? `${Number(data.budget).toLocaleString('th-TH')} บาท/ปี` : '-';
+  return [
+    '📋 ข้อมูลสำหรับเช็กเบี้ย',
+    '',
+    `• แผนที่สนใจ: ${f(data.product_interest)}`,
+    `• อายุ: ${data.age ? data.age + ' ปี' : '-'}`,
+    `• เพศ: ${f(data.gender)}`,
+    `• งบประมาณ: ${bdg}`,
+    `• เบอร์โทร: ${f(data.phone)}`,
+    `• เวลาสะดวก: ${f(data.preferred_contact_time)}`,
+    '',
+    'ผมจะส่งต่อให้คุณจิราวัฒน์ช่วยเช็กเบี้ยและติดต่อกลับครับ 😊',
+  ].join('\n');
 }
 
 // ─── Lead payload ─────────────────────────────────────────────────────────────
