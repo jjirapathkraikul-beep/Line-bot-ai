@@ -78,6 +78,13 @@ export const QR_AGE: QuickReplyOption[] = [
   { label: '50 ปีขึ้นไป',    text: '50+' },
 ];
 
+export const QR_CONTACT_TIME: QuickReplyOption[] = [
+  { label: '1️⃣ ช่วงเช้า',      text: 'ช่วงเช้า (09:00-12:00)' },
+  { label: '2️⃣ ช่วงบ่าย',      text: 'ช่วงบ่าย (13:00-17:00)' },
+  { label: '3️⃣ หลังเลิกงาน',   text: 'หลังเลิกงาน (18:00-21:00)' },
+  { label: '4️⃣ สะดวกทุกเวลา',  text: 'สะดวกทุกเวลา' },
+];
+
 export const QR_INSURANCE_CATEGORIES: QuickReplyOption[] = [
   { label: '1️⃣ สะสมทรัพย์',  text: 'ประกันชีวิตสะสมทรัพย์' },
   { label: '2️⃣ ลดหย่อนภาษี', text: 'ประกันลดหย่อนภาษี' },
@@ -112,6 +119,10 @@ export const INTEREST_TRIGGERS = [
 
 export const QUOTE_REQUIRED_FIELDS: LeadField[] = ['age', 'gender', 'product_interest'];
 export const PREMIUM_QUOTE_FIELDS: LeadField[]  = ['product_interest', 'age', 'gender', 'budget'];
+// All 6 required before handoff summary — ห้ามสรุปถ้ายังไม่ครบ
+export const HANDOFF_REQUIRED_FIELDS: LeadField[] = [
+  'age', 'gender', 'product_interest', 'real_name', 'phone', 'preferred_contact_time',
+];
 export const SCORED_FIELDS: LeadField[]         = ['age', 'gender', 'phone', 'product_interest', 'budget'];
 
 // State durations
@@ -136,7 +147,7 @@ const awaitingField    = new Map<string, {
   field: LeadField;
   queue: LeadField[];
   startedAt: number;
-  mode: 'general' | 'premium_quote';
+  mode: 'general' | 'premium_quote' | 'handoff';
 }>();
 
 // stateMetadata survives cancelAllCapture so resume works after flow ends
@@ -146,7 +157,7 @@ interface StateMetadata {
   stateUpdatedAt: number;
   pendingField?:  LeadField;
   pendingQueue?:  LeadField[];
-  pendingMode?:   'general' | 'premium_quote';
+  pendingMode?:   'general' | 'premium_quote' | 'handoff';
 }
 const stateMetadata = new Map<string, StateMetadata>();
 
@@ -437,6 +448,11 @@ export function isAnyTrigger(text: string): boolean {
   return ALL_INTENT_TRIGGERS.some((kw) => n.includes(normTH(kw)));
 }
 
+// Combines quote + contact — both enter the 6-field handoff flow
+export function isHandoffTrigger(text: string): boolean {
+  return isQuoteTrigger(text) || isContactTrigger(text);
+}
+
 // ─── Product mention detection ────────────────────────────────────────────────
 // Detects when user names a product/category WITHOUT using an explicit trigger.
 // e.g. "ประกันสุขภาพ", "Good Health Prime" → route to premium_quote flow.
@@ -529,13 +545,58 @@ function buildPremiumQuoteFieldQuestion(field: LeadField, data: ExtractedData): 
   }
 }
 
+const TIME_MAP: Record<string, string> = {
+  '1': 'ช่วงเช้า (09:00-12:00)',
+  '2': 'ช่วงบ่าย (13:00-17:00)',
+  '3': 'หลังเลิกงาน (18:00-21:00)',
+  '4': 'สะดวกทุกเวลา',
+};
+
+function buildHandoffFieldQuestion(field: LeadField): CaptureResponse {
+  switch (field) {
+    case 'age':
+      return {
+        reply: 'ได้เลยครับ 😊\n\nขอทราบอายุของผู้เอาประกันก่อนครับ',
+        quickReply: QR_AGE,
+      };
+    case 'gender':
+      return {
+        reply: 'ขอบคุณครับ 😊\n\nกรุณาเลือกเพศของผู้เอาประกันครับ',
+        quickReply: QR_GENDER,
+      };
+    case 'product_interest':
+      return {
+        reply: 'ขอทราบว่าสนใจแผนประกันแบบไหนครับ?',
+        quickReply: QR_INSURANCE_CATEGORIES,
+      };
+    case 'real_name':
+      return {
+        reply: '👤 เพื่อให้คุณจิราวัฒน์จัดทำข้อมูลให้ถูกต้อง\n\nรบกวนขอชื่อจริงของคุณได้ไหมครับ?',
+      };
+    case 'phone':
+      return {
+        reply: '📞 รบกวนฝากเบอร์โทรที่สะดวกไว้ได้เลยครับ\n\n• 0812345678\n• 0899999999',
+      };
+    case 'preferred_contact_time':
+      return {
+        reply: '🕒 สะดวกให้คุณจิราวัฒน์ติดต่อกลับช่วงไหนครับ?',
+        quickReply: QR_CONTACT_TIME,
+      };
+    default:
+      return buildGeneralFieldQuestion(field);
+  }
+}
+
 function buildFieldQuestion(
   field: LeadField,
-  mode: 'general' | 'premium_quote',
+  mode: 'general' | 'premium_quote' | 'handoff',
   userId: string
 ): CaptureResponse {
   if (mode === 'premium_quote') {
     return buildPremiumQuoteFieldQuestion(field, userLeadData.get(userId) ?? {});
+  }
+  if (mode === 'handoff') {
+    return buildHandoffFieldQuestion(field);
   }
   return buildGeneralFieldQuestion(field);
 }
@@ -546,6 +607,12 @@ function validateFieldInput(field: LeadField, text: string): boolean {
       return /\d/.test(text) || ['ต่ำกว่า 30', '30-39', '40-49', '50+'].some((r) => text.includes(r));
     case 'gender':
       return text.includes('ชาย') || text.includes('หญิง') || text.includes('ไม่ระบุ');
+    case 'real_name':
+      return text.trim().length >= 2;
+    case 'phone':
+      return detectPhone(text) !== null || /\d{9,10}/.test(text.replace(/[-\s]/g, ''));
+    case 'preferred_contact_time':
+      return text.trim().length >= 2;
     default:
       return text.length > 0 && text.length < 200;
   }
@@ -579,6 +646,12 @@ function normalizeFieldValue(field: LeadField, text: string): string {
     if (numM) return numM[0];
     return text.replace(/ปี/g, '').trim();
   }
+  if (field === 'phone') {
+    return detectPhone(text) ?? text.replace(/[-\s]/g, '');
+  }
+  if (field === 'preferred_contact_time') {
+    return TIME_MAP[text.trim()] ?? text.trim();
+  }
   return text.trim();
 }
 
@@ -586,7 +659,7 @@ export function startFieldCapture(
   userId: string,
   missingFields: LeadField[],
   intro?: string,
-  mode: 'general' | 'premium_quote' = 'general'
+  mode: 'general' | 'premium_quote' | 'handoff' = 'general'
 ): CaptureResponse {
   if (missingFields.length === 0) return { reply: '', done: true, mode };
   const [first, ...rest] = missingFields;
@@ -747,6 +820,24 @@ export function buildQuoteSummary(data: ExtractedData): string {
     `• เวลาสะดวก: ${f(data.preferred_contact_time)}`,
     '',
     'ผมจะส่งต่อให้คุณจิราวัฒน์ช่วยเช็กเบี้ยและติดต่อกลับครับ 😊',
+  ].join('\n');
+}
+
+export function buildHandoffSummary(data: ExtractedData): string {
+  const f   = (v?: string) => v || '-';
+  const bdg = data.budget ? `${Number(data.budget).toLocaleString('th-TH')} บาท/ปี` : '-';
+  return [
+    '📋 สรุปข้อมูล',
+    '',
+    `👤 ชื่อ: ${f(data.real_name)}`,
+    `🎂 อายุ: ${data.age ? data.age + ' ปี' : '-'}`,
+    `🚻 เพศ: ${f(data.gender)}`,
+    `📄 แผนที่สนใจ: ${f(data.product_interest)}`,
+    `💰 งบประมาณ: ${bdg}`,
+    `📞 เบอร์โทร: ${f(data.phone)}`,
+    `🕒 เวลาสะดวกติดต่อกลับ: ${f(data.preferred_contact_time)}`,
+    '',
+    'ผมจะส่งต่อให้คุณจิราวัฒน์ติดต่อกลับโดยเร็วที่สุดครับ 🙏',
   ].join('\n');
 }
 

@@ -24,7 +24,6 @@ import {
   PREMIUM_QUOTE_FIELDS,
   QUOTE_REQUIRED_FIELDS,
   isAwaitingPhone,
-  startPhoneAwait,
   handlePhoneAwait,
   isAwaitingGoal,
   handleGoalAwait,
@@ -43,7 +42,10 @@ import {
   cancelAwaitingPhone,
   buildLeadPayload,
   buildQuoteSummary,
+  buildHandoffSummary,
   extractProductFromText,
+  isHandoffTrigger,
+  HANDOFF_REQUIRED_FIELDS,
   QR_INSURANCE_CATEGORIES,
   type QuickReplyOption,
 } from '@/lib/leadCapture';
@@ -52,12 +54,7 @@ export const dynamic    = 'force-dynamic';
 export const maxDuration = 30;
 
 // ─── Version probe ────────────────────────────────────────────────────────────
-// State management note:
-// All state lives in in-memory Maps → reset on Vercel cold start (every ~few min of inactivity).
-// TIMEOUT_MS is now 24h, meaning state survives long pauses IF the function stays warm.
-// Cold-start wipes are unavoidable until Vercel KV migration (planned in requirement 7).
-// KV plan: replace all Map<string, ...> with kv.get/kv.set calls, TTL-backed by Vercel KV.
-const CODE_VERSION = 'b8e5698-v8';
+const CODE_VERSION = 'v9-handoff';
 
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true, version: CODE_VERSION, ts: new Date().toISOString() });
@@ -218,7 +215,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           if (autoResult.reply) {
             await sendReply(client, replyToken, autoResult.reply, autoResult.quickReply);
           } else if (autoResult.done && autoResult.allCaptured) {
-            if (autoResult.mode === 'premium_quote') {
+            if (autoResult.mode === 'handoff') {
+              const data = getLeadData(userId);
+              await sendReply(client, replyToken, buildHandoffSummary(data));
+              await saveHandoffCrm(userId, displayName, userMessage);
+            } else if (autoResult.mode === 'premium_quote') {
               const data = getLeadData(userId);
               await sendReply(client, replyToken, buildQuoteSummary(data));
               await saveQuoteCrm(userId, displayName, userMessage);
@@ -255,7 +256,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           if (result.reply) {
             await sendReply(client, replyToken, result.reply, result.quickReply);
           } else if (result.done && result.allCaptured) {
-            if (result.mode === 'premium_quote') {
+            if (result.mode === 'handoff') {
+              const data = getLeadData(userId);
+              await sendReply(client, replyToken, buildHandoffSummary(data));
+              await saveHandoffCrm(userId, displayName, userMessage);
+            } else if (result.mode === 'premium_quote') {
               const data = getLeadData(userId);
               await sendReply(client, replyToken, buildQuoteSummary(data));
               await saveQuoteCrm(userId, displayName, userMessage);
@@ -346,41 +351,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 11. Quote trigger → Premium Quote Flow ────────────────────────────
-      if (isQuoteTrigger(userMessage)) {
-        setLastIntent(userId, 'premium_quote');
+      // ── 11. Handoff trigger → collect 6 required fields → summary ────────
+      // Covers: เช็กเบี้ย, ค่าเบี้ยเท่าไร, ขอใบเสนอราคา, สนใจสมัคร, ให้ติดต่อกลับ, etc.
+      if (isHandoffTrigger(userMessage)) {
+        setLastIntent(userId, 'handoff');
         cancelAwaitingPhone(userId);
         const data    = getLeadData(userId);
-        const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
-        console.log(`[Lead] intent=premium_quote missing=${missing.join(',') || 'none'}`);
+        const missing = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
+        console.log(`[Lead] intent=handoff missing=${missing.join(',') || 'none'}`);
 
         if (missing.length === 0) {
-          await sendReply(client, replyToken, buildQuoteSummary(data));
-          await saveQuoteCrm(userId, displayName, userMessage);
+          await sendReply(client, replyToken, buildHandoffSummary(data));
+          await saveHandoffCrm(userId, displayName, userMessage);
         } else {
-          const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
+          const fieldQ = startFieldCapture(userId, missing, undefined, 'handoff');
           await sendReply(client, replyToken, fieldQ.reply, fieldQ.quickReply);
         }
         return;
       }
 
-      // ── 12. Contact trigger → ask phone ───────────────────────────────────
-      if (isContactTrigger(userMessage) && !hasPhone(userId)) {
-        setLastIntent(userId, 'contact');
-        const result = startPhoneAwait(userId);
-        await sendReply(client, replyToken, result.reply);
-        await upsertLead({
-          line_user_id: userId, display_name: displayName,
-          last_question: userMessage.substring(0, 300),
-          lead_status: 'interested', follow_up_status: 'awaiting_phone',
-          ...buildStatePayload(userId),
-        }).catch(logCrmErr);
-        return;
-      }
-
-      // ── 13. Product mention → enter premium quote flow ────────────────────
+      // ── 12. Product mention → premium quote (age/gender/budget) ──────────
       // Catches: "ประกันสุขภาพ", "Good Health Prime", etc. without a trigger prefix.
-      // Runs AFTER all trigger checks so it doesn't override explicit intents.
       const mentionedProduct = extractProductFromText(userMessage);
       if (mentionedProduct) {
         setLastIntent(userId, 'product_mention');
@@ -397,7 +388,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
-      // ── 14. Normal OpenAI flow ────────────────────────────────────────────
+      // ── 13. Normal OpenAI flow ─────────────────────────────────────────────
       setLastIntent(userId, 'openai');
       const faqs         = await fetchFaq();
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
@@ -423,6 +414,20 @@ async function saveQuoteCrm(userId: string, displayName: string, lastMsg: string
     purchase_objective: 'เช็กเบี้ย/ขอใบเสนอราคา',
     follow_up_status: 'Quotation Requested',
     lead_status: data.phone ? 'hot' : 'warm',
+    ...buildStatePayload(userId),
+  }).catch(logCrmErr);
+}
+
+async function saveHandoffCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
+  const data = getLeadData(userId);
+  console.log(`[CRM] handoff save userId=${userId}`);
+  await upsertLead({
+    line_user_id: userId, display_name: displayName,
+    ...data,
+    last_question: lastMsg.substring(0, 300),
+    purchase_objective: data.purchase_objective || 'ขอให้ติดต่อกลับ',
+    follow_up_status: 'Contact Requested',
+    lead_status: 'hot',
     ...buildStatePayload(userId),
   }).catch(logCrmErr);
 }
