@@ -7,6 +7,7 @@ import { getChatReply } from '@/lib/openai';
 import { upsertLead } from '@/lib/lead';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 30;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
