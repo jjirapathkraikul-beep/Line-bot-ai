@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Client, validateSignature } from '@line/bot-sdk';
-import type { WebhookRequestBody, MessageEvent, TextEventMessage, TextMessage } from '@line/bot-sdk';
+import type { WebhookRequestBody, MessageEvent, TextEventMessage, TextMessage, PostbackEvent } from '@line/bot-sdk';
 import { fetchFaq } from '@/lib/sheet';
 import { buildSystemPrompt } from '@/lib/prompt';
 import { getChatReply } from '@/lib/openai';
@@ -8,6 +8,7 @@ import { upsertLead } from '@/lib/lead';
 import { isAdmin, isAdminCommand, handleAdminCommand } from '@/lib/admin';
 import { notifyAdminIfNeeded } from '@/lib/adminNotify';
 import { hydrateAll, dehydrateAll, saveSession, deleteSession } from '@/lib/session';
+import { aboutJirawatMessage } from '@/lib/richMessages';
 import {
   handleAllCaptured,
   saveHandoffCrm,
@@ -150,6 +151,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   await Promise.all(
     body.events.map(async (event) => {
+      // ── Postback events ────────────────────────────────────────────────────
+      if (event.type === 'postback') {
+        const pb  = event as PostbackEvent;
+        const uid = pb.source.userId ?? 'unknown';
+        if (pb.postback.data === 'action=about_jirawat') {
+          console.log(`[Webhook] postback=about_jirawat uid=${uid.substring(0, 8)}***`);
+          try {
+            await client.replyMessage(pb.replyToken, aboutJirawatMessage);
+          } catch (err) {
+            console.error('[Webhook] replyMessage postback failed:', err);
+          }
+        }
+        return;
+      }
+
       if (event.type !== 'message' || event.message.type !== 'text') return;
 
       const msgEvent   = event as MessageEvent;
