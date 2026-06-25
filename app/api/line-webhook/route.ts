@@ -353,6 +353,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Each matched branch: cancelAllCapture → set intent → handle → return early
 
       const stateBefore = getCurrentState(userId);
+      const logIntentDone = (priority: string, intent: string) =>
+        console.log(
+          `[Intent:done] v=${CODE_VERSION} uid=${maskedId}` +
+          ` priority=${priority} intent=${intent} state_after=${getCurrentState(userId)}`
+        );
 
       // ── Priority B: Rich Menu text commands ──────────────────────────────
       const richCmd = detectRichMenuCommand(userMessage);
@@ -366,6 +371,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
         if (richCmd === 'about_jirawat') {
           await client.replyMessage(replyToken, aboutJirawatMessage);
+          logIntentDone('B', 'rich_menu:about_jirawat');
           await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
           return;
         }
@@ -381,6 +387,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             const fieldQ = startFieldCapture(userId, missing, intro, 'handoff');
             await reply(fieldQ.reply, fieldQ.quickReply);
           }
+          logIntentDone('B', 'rich_menu:contact_jirawat');
           await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
           return;
         }
@@ -397,6 +404,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
           const fieldQ  = startFieldCapture(userId, missing, undefined, 'premium_quote');
           await reply(fieldQ.reply, fieldQ.quickReply);
+          logIntentDone('B', `rich_menu:${richCmd}`);
           await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
           return;
         }
@@ -432,6 +440,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             ...buildStatePayload(userId),
           }).catch((e) => console.error('[CRM] underwriting partial:', e instanceof Error ? e.message : String(e)));
         }
+        logIntentDone('C', 'underwriting');
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
@@ -463,6 +472,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           await reply(fieldQ.reply, fieldQ.quickReply);
         }
         await saveCrm(userId, displayName, userMessage);
+        logIntentDone('D', 'contact');
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
@@ -487,6 +497,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
           await reply(fieldQ.reply, fieldQ.quickReply);
         }
+        logIntentDone('E', `product_mention:${mentionedProduct}`);
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
@@ -511,6 +522,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           const fieldQ = startFieldCapture(userId, missing, undefined, 'handoff');
           await reply(fieldQ.reply, fieldQ.quickReply);
         }
+        logIntentDone('F', 'quote');
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
@@ -526,6 +538,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
         const result = startCategoryFlow(userId);
         await reply(result.reply, result.quickReply);
+        logIntentDone('G', 'interest');
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
@@ -626,6 +639,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const systemPrompt = buildSystemPrompt(faqs, userMessage);
       const aiReply      = await getChatReply(userId, systemPrompt, userMessage);
       await reply(aiReply);
+      logIntentDone('H', 'openai_fallback');
 
       await saveCrm(userId, displayName, userMessage);
       await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
