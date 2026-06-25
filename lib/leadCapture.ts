@@ -120,6 +120,21 @@ export const INTEREST_TRIGGERS = [
   'สนใจประกัน', 'อยากได้ประกัน',
 ];
 
+export const UNDERWRITING_TRIGGERS = [
+  'เป็นมะเร็ง', 'เคยเป็นมะเร็ง', 'เป็นโรค', 'โรคประจำตัว',
+  'เบาหวาน', 'ความดัน', 'ไขมัน', 'เคยผ่าตัด',
+  'ทำประกันได้ไหม', 'รับประกันไหม', 'เคลมได้ไหม',
+];
+
+export const RICH_MENU_TEXT_COMMANDS = [
+  'about_jirawat', 'contact_jirawat', 'health_insurance',
+  'cancer_insurance', 'tax_planning', 'investment_retirement',
+] as const;
+export type RichMenuCommand = (typeof RICH_MENU_TEXT_COMMANDS)[number];
+
+// For contact-only flow — asks name/phone/time only, no age/gender/product upfront
+export const CONTACT_FLOW_FIELDS: LeadField[] = ['real_name', 'phone', 'preferred_contact_time'];
+
 export const QUOTE_REQUIRED_FIELDS: LeadField[] = ['age', 'gender', 'product_interest'];
 export const PREMIUM_QUOTE_FIELDS: LeadField[]  = ['product_interest', 'age', 'gender', 'budget'];
 // All 6 required before handoff summary — ห้ามสรุปถ้ายังไม่ครบ
@@ -134,7 +149,10 @@ const STALE_STATE_MS       = 7  * 24 * 60 * 60 * 1000; // 7d — resume prompt e
 const RESUME_PROMPT_MS     = 5  * 60 * 1000;        // 5min — user must respond to resume prompt
 
 const CANCEL_KEYWORDS = ['ยกเลิก', 'cancel', 'หยุด', 'ออก'];
-const ALL_INTENT_TRIGGERS = [...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS, ...INTEREST_TRIGGERS];
+const ALL_INTENT_TRIGGERS = [
+  ...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS, ...INTEREST_TRIGGERS,
+  ...UNDERWRITING_TRIGGERS, ...RICH_MENU_TEXT_COMMANDS,
+];
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
 // NOTE: All Maps are wiped on Vercel cold start (every ~few min of inactivity).
@@ -452,6 +470,19 @@ export function isAnyTrigger(text: string): boolean {
 // Combines quote + contact — both enter the 6-field handoff flow
 export function isHandoffTrigger(text: string): boolean {
   return isQuoteTrigger(text) || isContactTrigger(text);
+}
+
+export function isUnderwritingTrigger(text: string): boolean {
+  const n = normTH(text);
+  return UNDERWRITING_TRIGGERS.some((kw) => n.includes(normTH(kw)));
+}
+
+export function detectRichMenuCommand(text: string): RichMenuCommand | null {
+  const trimmed = text.trim();
+  if ((RICH_MENU_TEXT_COMMANDS as readonly string[]).includes(trimmed)) {
+    return trimmed as RichMenuCommand;
+  }
+  return null;
 }
 
 // ─── Product mention detection ────────────────────────────────────────────────

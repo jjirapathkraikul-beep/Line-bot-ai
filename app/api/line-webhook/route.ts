@@ -14,6 +14,7 @@ import {
   saveHandoffCrm,
   saveQuoteCrm,
   saveCrm,
+  saveUnderwritingCrm,
   logNotifyErr,
 } from '@/lib/leadService';
 import {
@@ -30,7 +31,10 @@ import {
   isQuoteTrigger,
   isInterestTrigger,
   isAnyTrigger,
+  isUnderwritingTrigger,
+  detectRichMenuCommand,
   PREMIUM_QUOTE_FIELDS,
+  CONTACT_FLOW_FIELDS,
   isAwaitingField,
   startFieldCapture,
   handleFieldCapture,
@@ -42,11 +46,9 @@ import {
   handleResumeAwait,
   hasExpiredStateForResume,
   trySmartResume,
-  cancelFieldCapture,
   buildQuoteSummary,
   buildHandoffSummary,
   extractProductFromText,
-  isHandoffTrigger,
   HANDOFF_REQUIRED_FIELDS,
   cancelAllCapture,
   clearLeadData,
@@ -153,16 +155,77 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     body.events.map(async (event) => {
       // ── Postback events ────────────────────────────────────────────────────
       if (event.type === 'postback') {
-        const pb  = event as PostbackEvent;
-        const uid = pb.source.userId ?? 'unknown';
-        if (pb.postback.data === 'action=about_jirawat') {
-          console.log(`[Webhook] postback=about_jirawat uid=${uid.substring(0, 8)}***`);
-          try {
-            await client.replyMessage(pb.replyToken, aboutJirawatMessage);
-          } catch (err) {
-            console.error('[Webhook] replyMessage postback failed:', err);
-          }
+        const pb       = event as PostbackEvent;
+        const uid      = pb.source.userId ?? 'unknown';
+        const pbAction = pb.postback.data;
+        const maskedPbId = `${uid.substring(0, 8)}***`;
+
+        console.log(`[Webhook] postback action=${pbAction} uid=${maskedPbId}`);
+
+        if (pbAction === 'action=about_jirawat') {
+          try { await client.replyMessage(pb.replyToken, aboutJirawatMessage); } catch { /* */ }
+          return;
         }
+
+        // Rich Menu postbacks that require state management
+        const PB_RICH_CMD: Record<string, string> = {
+          'action=contact_jirawat':       'contact_jirawat',
+          'action=health_insurance':      'health_insurance',
+          'action=cancer_insurance':      'cancer_insurance',
+          'action=tax_planning':          'tax_planning',
+          'action=investment_retirement': 'investment_retirement',
+        };
+        const pbRichCmd = PB_RICH_CMD[pbAction];
+        if (pbRichCmd) {
+          const pbSess = await hydrateAll(uid);
+          cancelAllCapture(uid);
+          setLastIntent(uid, `rich_menu:${pbRichCmd}`);
+          console.log(`[Intent] postback uid=${maskedPbId} detected_intent=rich_menu cmd=${pbRichCmd}`);
+
+          let replyText = '';
+          let replyQR: QuickReplyOption[] | undefined;
+
+          if (pbRichCmd === 'contact_jirawat') {
+            const pbLeadData = getLeadData(uid);
+            const missing    = getMissingFields(uid, CONTACT_FLOW_FIELDS);
+            if (missing.length === 0) {
+              replyText = buildHandoffSummary(pbLeadData);
+            } else {
+              const intro  = 'ยินดีให้บริการครับ 😊\n\nเพื่อให้คุณจิราวัฒน์ติดต่อกลับตามเวลาที่สะดวก';
+              const fieldQ = startFieldCapture(uid, missing, intro, 'handoff');
+              replyText = fieldQ.reply;
+              replyQR   = fieldQ.quickReply;
+            }
+          } else {
+            const PB_PRODUCT: Record<string, string> = {
+              health_insurance:      'ประกันสุขภาพ',
+              cancer_insurance:      'ประกันมะเร็งและโรคร้ายแรง',
+              tax_planning:          'ประกันลดหย่อนภาษี',
+              investment_retirement: 'ประกันควบการลงทุน Unit Linked',
+            };
+            const product = PB_PRODUCT[pbRichCmd];
+            accumulateLeadData(uid, { product_interest: product });
+            const missing = getMissingFields(uid, PREMIUM_QUOTE_FIELDS);
+            const fieldQ  = startFieldCapture(uid, missing, undefined, 'premium_quote');
+            replyText = fieldQ.reply;
+            replyQR   = fieldQ.quickReply;
+          }
+
+          if (replyText) {
+            const msg: TextMessage = { type: 'text', text: replyText };
+            if (replyQR?.length) {
+              msg.quickReply = {
+                items: replyQR.map((o) => ({
+                  type: 'action' as const,
+                  action: { type: 'message' as const, label: o.label, text: o.text },
+                })),
+              };
+            }
+            try { await client.replyMessage(pb.replyToken, msg); } catch { /* */ }
+          }
+          await saveSession(uid, dehydrateAll(uid, { ...pbSess })).catch(logSessionErr);
+        }
+
         return;
       }
 
@@ -269,7 +332,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const isQT                      = isQuoteTrigger(userMessage);
       const isCT                      = isContactTrigger(userMessage);
       const isIT                      = isInterestTrigger(userMessage);
-      const isHT                      = isHandoffTrigger(userMessage);
+      const isUWT                     = isUnderwritingTrigger(userMessage);
       const maskedId                  = `${userId.substring(0, 8)}***`;
       console.log(
         `[Lead] v=${CODE_VERSION}` +
@@ -280,8 +343,198 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         ` state_age_min=${dbg.stateAgeMinutes}` +
         ` score=${score}/${total}` +
         ` missing_handoff=${missingHandoff.join(',') || 'none'}` +
-        ` isHandoff=${isHT} isQuote=${isQT} isContact=${isCT} isInterest=${isIT}` +
+        ` isQuote=${isQT} isContact=${isCT} isInterest=${isIT} isUnderwriting=${isUWT}` +
         ` msg="${userMessage.substring(0, 40)}"`
+      );
+
+      // ─── Intent Priority Router ────────────────────────────────────────────
+      // Runs BEFORE state handlers. High-priority intents override current state.
+      // Priority: B(RichMenu) > C(Underwriting) > D(Contact) > E(Product) > F(Quote) > G(Interest)
+      // Each matched branch: cancelAllCapture → set intent → handle → return early
+
+      const stateBefore = getCurrentState(userId);
+
+      // ── Priority B: Rich Menu text commands ──────────────────────────────
+      const richCmd = detectRichMenuCommand(userMessage);
+      if (richCmd) {
+        cancelAllCapture(userId);
+        setLastIntent(userId, `rich_menu:${richCmd}`);
+        console.log(
+          `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+          ` detected_intent=rich_menu intent_priority=B cmd=${richCmd} action=route_rich_menu`
+        );
+
+        if (richCmd === 'about_jirawat') {
+          await client.replyMessage(replyToken, aboutJirawatMessage);
+          await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+          return;
+        }
+
+        if (richCmd === 'contact_jirawat') {
+          const data    = getLeadData(userId);
+          const missing = getMissingFields(userId, CONTACT_FLOW_FIELDS);
+          if (missing.length === 0) {
+            await reply(buildHandoffSummary(data));
+            await saveHandoffCrm(userId, displayName, userMessage);
+          } else {
+            const intro  = 'ยินดีให้บริการครับ 😊\n\nเพื่อให้คุณจิราวัฒน์ติดต่อกลับตามเวลาที่สะดวก';
+            const fieldQ = startFieldCapture(userId, missing, intro, 'handoff');
+            await reply(fieldQ.reply, fieldQ.quickReply);
+          }
+          await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+          return;
+        }
+
+        const RICH_MENU_PRODUCT: Record<string, string> = {
+          health_insurance:      'ประกันสุขภาพ',
+          cancer_insurance:      'ประกันมะเร็งและโรคร้ายแรง',
+          tax_planning:          'ประกันลดหย่อนภาษี',
+          investment_retirement: 'ประกันควบการลงทุน Unit Linked',
+        };
+        const rmProduct = RICH_MENU_PRODUCT[richCmd];
+        if (rmProduct) {
+          accumulateLeadData(userId, { product_interest: rmProduct });
+          const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
+          const fieldQ  = startFieldCapture(userId, missing, undefined, 'premium_quote');
+          await reply(fieldQ.reply, fieldQ.quickReply);
+          await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+          return;
+        }
+      }
+
+      // ── Priority C: Underwriting / Medical condition intent ──────────────
+      if (isUnderwritingTrigger(userMessage)) {
+        cancelAllCapture(userId);
+        setLastIntent(userId, 'underwriting');
+        console.log(
+          `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+          ` detected_intent=underwriting intent_priority=C action=underwriting_handoff`
+        );
+
+        const UNDERWRITING_INTRO =
+          'กรณีมีโรคประจำตัวหรือเคยเป็นโรคร้ายแรง ต้องให้บริษัทพิจารณาเป็นรายกรณีครับ 😊\n\n' +
+          'เพื่อให้คุณจิราวัฒน์ช่วยดูแนวทางที่เหมาะสม\n' +
+          'รบกวนฝากชื่อและเบอร์โทรที่สะดวกไว้ได้เลยครับ';
+
+        const data    = getLeadData(userId);
+        const missing = getMissingFields(userId, CONTACT_FLOW_FIELDS);
+
+        if (missing.length === 0) {
+          await reply(`${UNDERWRITING_INTRO}\n\n${buildHandoffSummary(data)}`);
+          await saveUnderwritingCrm(userId, displayName, userMessage);
+        } else {
+          const fieldQ = startFieldCapture(userId, missing, UNDERWRITING_INTRO, 'handoff');
+          await reply(fieldQ.reply, fieldQ.quickReply);
+          await upsertLead({
+            line_user_id: userId, display_name: displayName,
+            ...data, last_question: userMessage.substring(0, 300),
+            lead_status: 'Hot', follow_up_status: 'Need Human Review',
+            ...buildStatePayload(userId),
+          }).catch((e) => console.error('[CRM] underwriting partial:', e instanceof Error ? e.message : String(e)));
+        }
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
+      }
+
+      // ── Priority D: Contact trigger → name / phone / time only ──────────
+      if (isContactTrigger(userMessage)) {
+        cancelAllCapture(userId);
+        setLastIntent(userId, 'contact');
+        console.log(
+          `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+          ` detected_intent=contact intent_priority=D action=contact_flow`
+        );
+
+        const data    = getLeadData(userId);
+        const missing = getMissingFields(userId, CONTACT_FLOW_FIELDS);
+
+        const msgN = userMessage.normalize('NFC').toLowerCase();
+        const HIGH_INTENT = ['สมัครเลย', 'คุยกับคุณจิราวัฒน์'];
+        if (HIGH_INTENT.some((w) => msgN.includes(w.normalize('NFC').toLowerCase()))) {
+          notifyAdminIfNeeded(userId, displayName, data, 'trigger_word').catch(logNotifyErr);
+        }
+
+        if (missing.length === 0) {
+          await reply(buildHandoffSummary(data));
+          await saveHandoffCrm(userId, displayName, userMessage);
+        } else {
+          const intro  = 'ยินดีให้บริการครับ 😊\n\nเพื่อให้คุณจิราวัฒน์ติดต่อกลับ รบกวนขอข้อมูลเล็กน้อยครับ';
+          const fieldQ = startFieldCapture(userId, missing, intro, 'handoff');
+          await reply(fieldQ.reply, fieldQ.quickReply);
+        }
+        await saveCrm(userId, displayName, userMessage);
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
+      }
+
+      // ── Priority E: Product mention → premium quote (moved before interest) ─
+      const mentionedProduct = extractProductFromText(userMessage);
+      if (mentionedProduct) {
+        cancelAllCapture(userId);
+        setLastIntent(userId, 'product_mention');
+        accumulateLeadData(userId, { product_interest: mentionedProduct });
+        const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
+        console.log(
+          `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+          ` detected_intent=product_mention intent_priority=E` +
+          ` product=${mentionedProduct} missing=${missing.join(',') || 'none'}`
+        );
+
+        if (missing.length === 0) {
+          await reply(buildQuoteSummary(getLeadData(userId)));
+          await saveQuoteCrm(userId, displayName, userMessage);
+        } else {
+          const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
+          await reply(fieldQ.reply, fieldQ.quickReply);
+        }
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
+      }
+
+      // ── Priority F: Quote trigger → full handoff (age/gender/product/contact)
+      if (isQuoteTrigger(userMessage)) {
+        cancelAllCapture(userId);
+        setLastIntent(userId, 'quote');
+        console.log(
+          `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+          ` detected_intent=quote intent_priority=F action=handoff_flow`
+        );
+
+        const data    = getLeadData(userId);
+        const missing = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
+        console.log(`[Lead] intent=quote missing=${missing.join(',') || 'none'}`);
+
+        if (missing.length === 0) {
+          await reply(buildHandoffSummary(data));
+          await saveHandoffCrm(userId, displayName, userMessage);
+        } else {
+          const fieldQ = startFieldCapture(userId, missing, undefined, 'handoff');
+          await reply(fieldQ.reply, fieldQ.quickReply);
+        }
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
+      }
+
+      // ── Priority G: Interest trigger → 6-category Quick Reply ───────────
+      if (isInterestTrigger(userMessage)) {
+        cancelAllCapture(userId);
+        setLastIntent(userId, 'interest');
+        console.log(
+          `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+          ` detected_intent=interest intent_priority=G action=category_flow`
+        );
+
+        const result = startCategoryFlow(userId);
+        await reply(result.reply, result.quickReply);
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
+      }
+
+      // ─── State Handlers ─────────────────────────────────────────────────────
+      // Reached only when no priority intent matched — process as state continuation.
+      console.log(
+        `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+        ` detected_intent=none intent_priority=state_handler`
       );
 
       // ── 5. Resume prompt response ──────────────────────────────────────────
@@ -290,12 +543,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (!result.fallthrough) {
           if (result.reply) await reply(result.reply, result.quickReply);
           if (result.reset) {
-            // User chose "เริ่มใหม่" — state cleared, persist that to KV
             await deleteSession(userId).catch(logSessionErr);
             return;
           }
           if (result.resumed && result.reply) {
-            // User chose "คุยต่อ" — awaitingField was restored, save to KV
             await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
             return;
           }
@@ -315,45 +566,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           }
           return;
         }
-        if (!isAnyTrigger(userMessage)) {
-          setLastIntent(userId, 'resume_prompt');
-          const prompt = startResumeFlow(userId);
-          await reply(prompt.reply, prompt.quickReply);
-          return;
-        }
+        setLastIntent(userId, 'resume_prompt');
+        const prompt = startResumeFlow(userId);
+        await reply(prompt.reply, prompt.quickReply);
+        return;
       }
 
-      // ── 7. Targeted field capture ─────────────────────────────────────────
+      // ── 7. Targeted field capture (no intent match → treat as field answer) ─
       if (isAwaitingField(userId)) {
-        if (isAnyTrigger(userMessage)) {
-          console.log('[Lead] intent switch while awaiting_field — cancelling');
-          cancelFieldCapture(userId);
-          // fall through to intent handlers
-        } else {
-          const result = handleFieldCapture(userId, userMessage);
+        const result = handleFieldCapture(userId, userMessage);
 
-          if (result.reply) {
-            await reply(result.reply, result.quickReply);
-            // Partial CRM + admin notification after phone is captured mid-flow
-            if (result.capturedField === 'phone') {
-              const d = getLeadData(userId);
-              await upsertLead({
-                line_user_id: userId, display_name: displayName,
-                phone: d.phone ?? '', follow_up_status: 'Collecting Info',
-                ...buildStatePayload(userId),
-              }).catch((e) => console.error('[CRM] partial phone save:', e instanceof Error ? e.message : String(e)));
-              notifyAdminIfNeeded(userId, displayName, d, 'phone_first').catch(logNotifyErr);
-            }
-          } else if (result.done && result.allCaptured) {
-            await handleAllCaptured(result.mode, userId, displayName, userMessage, reply);
-          } else if (result.done && result.cancelled) {
-            await reply(result.reply);
+        if (result.reply) {
+          await reply(result.reply, result.quickReply);
+          if (result.capturedField === 'phone') {
+            const d = getLeadData(userId);
+            await upsertLead({
+              line_user_id: userId, display_name: displayName,
+              phone: d.phone ?? '', follow_up_status: 'Collecting Info',
+              ...buildStatePayload(userId),
+            }).catch((e) => console.error('[CRM] partial phone save:', e instanceof Error ? e.message : String(e)));
+            notifyAdminIfNeeded(userId, displayName, d, 'phone_first').catch(logNotifyErr);
           }
-
-          // Persist state to KV after field capture
-          await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
-          return;
+        } else if (result.done && result.allCaptured) {
+          await handleAllCaptured(result.mode, userId, displayName, userMessage, reply);
+        } else if (result.done && result.cancelled) {
+          await reply(result.reply);
         }
+
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
       }
 
       // ── 8. Category await ─────────────────────────────────────────────────
@@ -375,58 +616,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           await saveHandoffCrm(userId, displayName, userMessage);
         }
         await saveCrm(userId, displayName, userMessage);
-        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
-        return;
-      }
-
-      // ── 9. Interest trigger → 6-category Quick Reply ──────────────────────
-      if (isInterestTrigger(userMessage)) {
-        setLastIntent(userId, 'interest');
-        const result = startCategoryFlow(userId);
-        await reply(result.reply, result.quickReply);
-        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
-        return;
-      }
-
-      // ── 10. Handoff trigger → collect 6 required fields → summary ─────────
-      if (isHandoffTrigger(userMessage)) {
-        setLastIntent(userId, 'handoff');
-        const data    = getLeadData(userId);
-        const missing = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
-        console.log(`[Lead] intent=handoff missing=${missing.join(',') || 'none'}`);
-
-        // Immediate admin alert for high-intent trigger words
-        const msgN = userMessage.normalize('NFC').toLowerCase();
-        const HIGH_INTENT = ['สมัครเลย', 'คุยกับคุณจิราวัฒน์'];
-        if (HIGH_INTENT.some((w) => msgN.includes(w.normalize('NFC').toLowerCase()))) {
-          notifyAdminIfNeeded(userId, displayName, data, 'trigger_word').catch(logNotifyErr);
-        }
-
-        if (missing.length === 0) {
-          await reply(buildHandoffSummary(data));
-          await saveHandoffCrm(userId, displayName, userMessage);
-        } else {
-          const fieldQ = startFieldCapture(userId, missing, undefined, 'handoff');
-          await reply(fieldQ.reply, fieldQ.quickReply);
-        }
-        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
-        return;
-      }
-
-      // ── 11. Product mention → premium quote (age/gender/budget) ──────────
-      const mentionedProduct = extractProductFromText(userMessage);
-      if (mentionedProduct) {
-        setLastIntent(userId, 'product_mention');
-        accumulateLeadData(userId, { product_interest: mentionedProduct });
-        const missing = getMissingFields(userId, PREMIUM_QUOTE_FIELDS);
-        console.log(`[Lead] intent=product_mention product=${mentionedProduct} missing=${missing.join(',') || 'none'}`);
-        if (missing.length === 0) {
-          await reply(buildQuoteSummary(getLeadData(userId)));
-          await saveQuoteCrm(userId, displayName, userMessage);
-        } else {
-          const fieldQ = startFieldCapture(userId, missing, undefined, 'premium_quote');
-          await reply(fieldQ.reply, fieldQ.quickReply);
-        }
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }

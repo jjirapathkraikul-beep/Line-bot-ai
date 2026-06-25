@@ -99,6 +99,21 @@ export async function saveCrm(userId: string, displayName: string, lastMsg: stri
   }
 }
 
+export async function saveUnderwritingCrm(userId: string, displayName: string, lastMsg: string): Promise<void> {
+  const data = getLeadData(userId);
+  console.log(`[CRM] underwriting save uid=${userId.substring(0, 8)}***`);
+  await upsertLead({
+    line_user_id: userId, display_name: displayName,
+    ...data,
+    last_question:      lastMsg.substring(0, 300),
+    purchase_objective: data.purchase_objective || 'underwriting review',
+    follow_up_status:   'Need Human Review',
+    lead_status:        'Hot',
+    ...buildStatePayload(userId),
+  }).catch(logCrmErr);
+  notifyAdminIfNeeded(userId, displayName, data, 'underwriting').catch(logNotifyErr);
+}
+
 export function logCrmErr(err: unknown): void {
   console.error(`[CRM] save error: ${err instanceof Error ? err.message : String(err)}`);
 }

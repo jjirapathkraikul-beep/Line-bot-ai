@@ -3,7 +3,7 @@ import { upsertLead } from './lead';
 import type { ExtractedData } from './leadCapture';
 import { computeLeadScore } from './scorer';
 
-export type NotifyReason = 'phone_first' | 'handoff_complete' | 'score_high' | 'trigger_word';
+export type NotifyReason = 'phone_first' | 'handoff_complete' | 'score_high' | 'trigger_word' | 'underwriting';
 
 // In-memory dedup — hydrated from KV session at request start via injectNotifiedReasons
 const sentMap = new Map<string, Set<string>>();
@@ -35,6 +35,7 @@ function buildSummaryLine(data: ExtractedData, reason: NotifyReason): string {
     handoff_complete: 'ข้อมูลครบ — พร้อม handoff',
     score_high:       'Lead Score ถึงเกณฑ์ ≥70',
     trigger_word:     'ลูกค้าพร้อมสมัคร / ขอคุย',
+    underwriting:     'มีโรคประจำตัว — ต้องพิจารณาเป็นรายกรณี',
   };
   parts.push(reasonLabel[reason]);
   return parts.join(' | ');
