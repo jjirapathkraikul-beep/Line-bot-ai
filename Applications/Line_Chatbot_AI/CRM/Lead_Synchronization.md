@@ -1,24 +1,14 @@
-# 1. Lead Synchronization
+# Lead Synchronization — RELOCATED
+**Status:** Deprecated (Relocated)
+**Relocated To:** `Applications/Line_Chatbot_AI/Integrations/Lead_Synchronization.md`
+**Effective Date:** 2026-06-26
 
-### Metadata
-- Version: 1.0
-- Effective Date: 2026-06-26
+---
 
-## 1. Purpose
-Describe sync protocols, idempotency, and reconciliation between chatbot and CRM.
+This file has been relocated to `Integrations/Lead_Synchronization.md` as part of the AIOS Boundary Cleanup Sprint (2026-06-26).
 
-## 2. Scope
-Downstream sync rules, conflict resolution, and webhooks.
+**Reason:** Synchronization is an integration concern, not a CRM data model concern. The `CRM/` folder owns schema and field mapping. The `Integrations/` folder owns sync protocol, retry behavior, and external service coordination.
 
-## 3. Inputs
-- Lead updates
-- CRM responses
+Please update any references to point to the new location:
 
-## 4. Outputs
-- Sync logs and reconciliation actions
-
-## 5. Dependencies
-- CRM APIs
-
-## 6. Future Improvements
-- Add retry/backoff strategies and monitoring
+`Applications/Line_Chatbot_AI/Integrations/Lead_Synchronization.md`
