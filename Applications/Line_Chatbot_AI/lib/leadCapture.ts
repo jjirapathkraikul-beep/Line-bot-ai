@@ -1,4 +1,5 @@
 import type { LeadUpsert } from '@/types/faq';
+import { TRUST_TRIGGERS } from './trustEngine';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -151,7 +152,7 @@ const RESUME_PROMPT_MS     = 5  * 60 * 1000;        // 5min — user must respon
 const CANCEL_KEYWORDS = ['ยกเลิก', 'cancel', 'หยุด', 'ออก'];
 const ALL_INTENT_TRIGGERS = [
   ...QUOTE_TRIGGERS, ...CONTACT_TRIGGERS, ...INTEREST_TRIGGERS,
-  ...UNDERWRITING_TRIGGERS, ...RICH_MENU_TEXT_COMMANDS,
+  ...UNDERWRITING_TRIGGERS, ...RICH_MENU_TEXT_COMMANDS, ...TRUST_TRIGGERS,
 ];
 
 // ─── In-memory state ──────────────────────────────────────────────────────────

@@ -8,6 +8,9 @@ import { upsertLead } from '@/lib/lead';
 import { isAdmin, isAdminCommand, handleAdminCommand } from '@/lib/admin';
 import { notifyAdminIfNeeded } from '@/lib/adminNotify';
 import { hydrateAll, dehydrateAll, saveSession, deleteSession } from '@/lib/session';
+import { isTrustTrigger, buildTrustResponse } from '@/lib/trustEngine';
+import { buildMedicalResponse } from '@/lib/medicalEngine';
+import { logAuditEvent } from '@/lib/conversationAudit';
 import { aboutJirawatMessage } from '@/lib/richMessages';
 import {
   handleAllCaptured,
@@ -410,37 +413,59 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── Priority C: Underwriting / Medical condition intent ──────────────
-      if (isUnderwritingTrigger(userMessage)) {
+      // ── Priority C: Trust / Fraud concern (v2) ──────────────────────────
+      // Must fire BEFORE underwriting/contact — never ask phone after trust concern.
+      if (isTrustTrigger(userMessage)) {
         cancelAllCapture(userId);
-        setLastIntent(userId, 'underwriting');
+        setLastIntent(userId, 'trust_concern');
         console.log(
           `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
-          ` detected_intent=underwriting intent_priority=C action=underwriting_handoff`
+          ` detected_intent=trust_concern intent_priority=C action=build_trust`
         );
 
-        const UNDERWRITING_INTRO =
-          'กรณีมีโรคประจำตัวหรือเคยเป็นโรคร้ายแรง ต้องให้บริษัทพิจารณาเป็นรายกรณีครับ 😊\n\n' +
-          'เพื่อให้คุณจิราวัฒน์ช่วยดูแนวทางที่เหมาะสม\n' +
-          'รบกวนฝากชื่อและเบอร์โทรที่สะดวกไว้ได้เลยครับ';
+        await reply(buildTrustResponse(userMessage));
 
-        const data    = getLeadData(userId);
-        const missing = getMissingFields(userId, CONTACT_FLOW_FIELDS);
+        logIntentDone('C', 'trust_concern');
+        const trustData = getLeadData(userId);
+        logAuditEvent({
+          userId: maskedId, message: userMessage.substring(0, 100),
+          detected_intent: 'trust_concern', priority: 'C',
+          current_state_before: stateBefore, action_taken: 'build_trust',
+          current_state_after: getCurrentState(userId),
+          lead_fields_known: Object.keys(trustData).filter((k) => !!(trustData as Record<string, unknown>)[k]),
+          handoff_triggered: false, timestamp: new Date().toISOString(),
+        });
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
+      }
 
-        if (missing.length === 0) {
-          await reply(`${UNDERWRITING_INTRO}\n\n${buildHandoffSummary(data)}`);
-          await saveUnderwritingCrm(userId, displayName, userMessage);
-        } else {
-          const fieldQ = startFieldCapture(userId, missing, UNDERWRITING_INTRO, 'handoff');
-          await reply(fieldQ.reply, fieldQ.quickReply);
-          await upsertLead({
-            line_user_id: userId, display_name: displayName,
-            ...data, last_question: userMessage.substring(0, 300),
-            lead_status: 'Hot', follow_up_status: 'Need Human Review',
-            ...buildStatePayload(userId),
-          }).catch((e) => console.error('[CRM] underwriting partial:', e instanceof Error ? e.message : String(e)));
-        }
-        logIntentDone('C', 'underwriting');
+      // ── Priority D: Underwriting / Medical condition intent ──────────────
+      // v2: Answer medical question FIRST (AIOS: Answer Before Asking).
+      // Do NOT start field capture. Ask one medical follow-up. CRM saves available data.
+      if (isUnderwritingTrigger(userMessage)) {
+        cancelAllCapture(userId);
+        setLastIntent(userId, 'medical_inquiry');
+        console.log(
+          `[Intent] v=${CODE_VERSION} uid=${maskedId} state_before=${stateBefore}` +
+          ` detected_intent=medical_inquiry intent_priority=D action=answer_medical_first`
+        );
+
+        // Answer the medical question carefully + ask one relevant follow-up
+        await reply(buildMedicalResponse(userMessage));
+
+        // CRM + admin notify with whatever data we have (phone may be missing — OK)
+        await saveUnderwritingCrm(userId, displayName, userMessage);
+
+        logIntentDone('D', 'medical_inquiry');
+        const medData = getLeadData(userId);
+        logAuditEvent({
+          userId: maskedId, message: userMessage.substring(0, 100),
+          detected_intent: 'medical_inquiry', priority: 'D',
+          current_state_before: stateBefore, action_taken: 'answer_medical_first',
+          current_state_after: getCurrentState(userId),
+          lead_fields_known: Object.keys(medData).filter((k) => !!(medData as Record<string, unknown>)[k]),
+          handoff_triggered: false, timestamp: new Date().toISOString(),
+        });
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
@@ -636,7 +661,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // ── 12. Normal OpenAI flow ─────────────────────────────────────────────
       setLastIntent(userId, 'openai');
       const faqs         = await fetchFaq();
-      const systemPrompt = buildSystemPrompt(faqs, userMessage);
+      // Pass known lead data so OpenAI does not re-ask fields already captured
+      const systemPrompt = buildSystemPrompt(faqs, userMessage, getLeadData(userId));
       const aiReply      = await getChatReply(userId, systemPrompt, userMessage);
       await reply(aiReply);
       logIntentDone('H', 'openai_fallback');
