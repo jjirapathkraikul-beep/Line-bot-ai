@@ -43,6 +43,17 @@ export interface RuntimeTrace {
   runtimeVersion: string;
   decision: string;
   timestamp: string;
+  // Phase 10.2 additions — intent detector + capability loader
+  detectedIntent?: string;
+  confidence?: number;
+  isTrustSignal?: boolean;
+  isMedicalSignal?: boolean;
+  isEmergency?: boolean;
+  isHumanRequest?: boolean;
+  selectedCapabilities?: string[];
+  selectedAcpPaths?: string[];
+  shouldInterruptCurrentState?: boolean;
+  interruptReason?: string;
 }
 
 export interface RuntimeDecision {
