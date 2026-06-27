@@ -70,6 +70,21 @@ export interface RuntimeTrace {
   knowledgeDecisionReason?: string;
   mandatoryKnowledgeIncluded?: boolean;
   knowledgeFragmentsAdded?: string[];
+  // Phase 10.5 additions — decision engine
+  action?: string;
+  decisionPriority?: string;
+  shouldCollectLead?: boolean;
+  shouldEscalate?: boolean;
+  askField?: string | null;
+  mustAnswerFirst?: boolean;
+  mustBuildTrust?: boolean;
+  mustIncludeDisclaimer?: boolean;
+  mustIncludeRiskDisclosure?: boolean;
+  decisionReason?: string;
+  decisionWarnings?: string[];
+  blockedCapabilities?: string[];
+  decisionConfidence?: number;
+  alternativeAction?: string | null;
 }
 
 export interface RuntimeDecision {

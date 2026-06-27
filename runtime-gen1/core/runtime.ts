@@ -4,8 +4,9 @@ import { detectIntent } from '../capability/intentDetector';
 import { loadCapability } from '../capability/capabilityLoader';
 import { resolveMemory } from '../memory/memoryResolver';
 import { resolveKnowledge } from '../knowledge/knowledgeResolver';
+import { makeDecision } from '../decision/decisionEngine';
 
-export const RUNTIME_VERSION = 'gen1-stub-0.4.0';
+export const RUNTIME_VERSION = 'gen1-stub-0.5.0';
 
 const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่นใหม่กำลังทำงานครับ 😊';
 
@@ -21,6 +22,9 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
 
   // Step 4: Knowledge resolution
   const knowledgeResult = await resolveKnowledge({ intentResult, capabilityResult, memoryResult });
+
+  // Step 5: Decision engine
+  const decisionResult = makeDecision({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult });
 
   const trace: RuntimeTrace = {
     mode:            getRuntimeMode(),
@@ -58,6 +62,21 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
     knowledgeDecisionReason:   knowledgeResult.knowledgeTrace.knowledgeDecisionReason,
     mandatoryKnowledgeIncluded: knowledgeResult.knowledgeTrace.mandatoryIncluded,
     knowledgeFragmentsAdded:   knowledgeResult.knowledgeTrace.mandatoryFragmentsAdded,
+    // Phase 10.5 — decision engine
+    action:                    decisionResult.action,
+    decisionPriority:          decisionResult.priority,
+    shouldCollectLead:         decisionResult.shouldCollectLead,
+    shouldEscalate:            decisionResult.shouldEscalate,
+    askField:                  decisionResult.askField,
+    mustAnswerFirst:           decisionResult.mustAnswerFirst,
+    mustBuildTrust:            decisionResult.mustBuildTrust,
+    mustIncludeDisclaimer:     decisionResult.mustIncludeDisclaimer,
+    mustIncludeRiskDisclosure: decisionResult.mustIncludeRiskDisclosure,
+    decisionReason:            decisionResult.reason,
+    decisionWarnings:          decisionResult.warnings.map((w) => `[${w.severity}] ${w.code}: ${w.message}`),
+    blockedCapabilities:       decisionResult.blockedCapabilities,
+    decisionConfidence:        decisionResult.decisionTrace.confidence,
+    alternativeAction:         decisionResult.decisionTrace.alternativeAction,
   };
 
   return {
