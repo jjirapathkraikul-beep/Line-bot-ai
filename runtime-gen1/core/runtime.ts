@@ -3,8 +3,9 @@ import { getRuntimeMode } from './runtimeMode';
 import { detectIntent } from '../capability/intentDetector';
 import { loadCapability } from '../capability/capabilityLoader';
 import { resolveMemory } from '../memory/memoryResolver';
+import { resolveKnowledge } from '../knowledge/knowledgeResolver';
 
-export const RUNTIME_VERSION = 'gen1-stub-0.3.0';
+export const RUNTIME_VERSION = 'gen1-stub-0.4.0';
 
 const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่นใหม่กำลังทำงานครับ 😊';
 
@@ -17,6 +18,9 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
 
   // Step 3: Memory resolution
   const memoryResult = resolveMemory({ runtimeInput: input, intentResult, capabilityResult });
+
+  // Step 4: Knowledge resolution
+  const knowledgeResult = await resolveKnowledge({ intentResult, capabilityResult, memoryResult });
 
   const trace: RuntimeTrace = {
     mode:            getRuntimeMode(),
@@ -46,6 +50,14 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
       field: f.field, value: f.value, confidence: f.confidence,
     })),
     memoryDecisionReason: memoryResult.memoryDecisionReason,
+    // Phase 10.4 — knowledge resolver
+    selectedKnowledgePaths:    knowledgeResult.selectedSources.map((s) => s.path),
+    loadedKnowledgeCount:      knowledgeResult.loadedSnippets.length,
+    missingKnowledgePaths:     knowledgeResult.missingSources,
+    knowledgeWarnings:         knowledgeResult.warnings,
+    knowledgeDecisionReason:   knowledgeResult.knowledgeTrace.knowledgeDecisionReason,
+    mandatoryKnowledgeIncluded: knowledgeResult.knowledgeTrace.mandatoryIncluded,
+    knowledgeFragmentsAdded:   knowledgeResult.knowledgeTrace.mandatoryFragmentsAdded,
   };
 
   return {

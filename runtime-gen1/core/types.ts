@@ -62,6 +62,14 @@ export interface RuntimeTrace {
   nextBestFieldToAsk?: string | null;
   extractedFacts?: Array<{ field: string; value: string; confidence: number }>;
   memoryDecisionReason?: string;
+  // Phase 10.4 additions — knowledge resolver
+  selectedKnowledgePaths?: string[];
+  loadedKnowledgeCount?: number;
+  missingKnowledgePaths?: string[];
+  knowledgeWarnings?: string[];
+  knowledgeDecisionReason?: string;
+  mandatoryKnowledgeIncluded?: boolean;
+  knowledgeFragmentsAdded?: string[];
 }
 
 export interface RuntimeDecision {
