@@ -424,15 +424,50 @@ Emit structured analytics events for every meaningful occurrence in this executi
 
 ---
 
+## ACE Integration Point
+
+The AI Context Engine (ACE) is invoked as a sub-pipeline within AEE Steps 6–9.
+
+**When ACE is invoked**: After Step 6 (Capability Selection) returns `active_capabilities[]`, ACE begins its 15-step Context Assembly Pipeline. ACE receives the ACP identifier from the Capability Loader.
+
+**What ACE does in terms of AEE steps**:
+
+| AEE Step | ACE Responsibility |
+|---|---|
+| Step 6 output | AEE returns primary ACP identifier → ACE receives it as input |
+| Step 7 (Knowledge Resolution) | ACE Steps 7–8 perform intent-driven knowledge selection. ACE `KnowledgeBundle` replaces AEE's `KnowledgeBundle` |
+| Step 8 (Decision Engine) | ACE Step 9 produces `decision.action` using ACP Decision_Rules. ACE `Decision` replaces AEE's `Decision` |
+| Step 9 (Response Composer) | AEE passes ACE's complete `ExecutionContext` to the LLM. The LLM is the Response Composer. ACE's `response_profile` governs the output. |
+
+**What AEE controls exclusively**:
+- Steps 1–6: Input normalization, context hydration, intent/emotion/goal detection, capability selection
+- Steps 10–11: Post-response memory update and analytics emission
+
+**Integration call sequence**:
+```
+AEE.step6_capability_selection() → returns { primary_acp: "ACP-08" }
+ACE.assemble(primary_acp, execution_context_partial) → returns ExecutionContext (complete)
+AEE.step9_response_composer(execution_context) → calls LLM with ExecutionContext
+LLM response → AEE packages into ExecutionOutput
+AEE.step10_memory_update() [async]
+AEE.step11_analytics() [async]
+```
+
+Reference: `AIOS/ContextEngine/03_CONTEXT_ASSEMBLY_PIPELINE.md` for full ACE pipeline specification.
+
+---
+
 ## Dependencies
 
 - `03_CAPABILITY_LOADER.md` — Steps 6
-- `04_KNOWLEDGE_RESOLVER.md` — Step 7
-- `05_DECISION_PIPELINE.md` — Step 8
+- `04_KNOWLEDGE_RESOLVER.md` — Step 7 (ACE owns this in Phase 9+)
+- `05_DECISION_PIPELINE.md` — Step 8 (ACE owns this in Phase 9+)
 - `06_RESPONSE_COMPOSER.md` — Step 9
 - `07_MEMORY_ENGINE.md` — Steps 2, 10
 - `08_ANALYTICS_ENGINE.md` — Step 11
 - `09_EXECUTION_CONTRACT.md` — Input/Output schemas
+- `AIOS/ContextEngine/` — ACE sub-pipeline (Steps 6–9 delegate to ACE)
+- `AIOS/AIRR/Capability_Registry_Reconciliation.md` — CAP-to-ACP mapping
 
 ---
 
@@ -441,3 +476,4 @@ Emit structured analytics events for every meaningful occurrence in this executi
 | Version | Date | Author | Change Description |
 |---|---|---|---|
 | 1.0 | 2026-06-26 | Chief AI System Architect | Initial creation — complete 11-step pipeline specification |
+| 1.1 | 2026-06-27 | Chief AI Systems Architect | Add ACE Integration Point section — resolves AIRR GAP-H-01 |
