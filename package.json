@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "npx tsx --tsconfig tsconfig.json __tests__/intentRouter.test.ts"
+    "test": "./node_modules/.bin/tsx --tsconfig tsconfig.json __tests__/intentRouter.test.ts && ./node_modules/.bin/tsx --tsconfig tsconfig.json __tests__/gen1/runtimeMode.test.ts && ./node_modules/.bin/tsx --tsconfig tsconfig.json __tests__/gen1/runtime.test.ts"
   },
   "dependencies": {
     "@line/bot-sdk": "^9.9.0",

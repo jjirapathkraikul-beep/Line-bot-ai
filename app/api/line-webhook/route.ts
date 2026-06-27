@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { execute } from '@/runtime-gen1/core/runtime';
+import { getRuntimeMode } from '@/runtime-gen1/core/runtimeMode';
 import { Client, validateSignature } from '@line/bot-sdk';
 import type { WebhookRequestBody, MessageEvent, TextEventMessage, TextMessage, PostbackEvent } from '@line/bot-sdk';
 import { fetchFaq } from '@/lib/sheet';
@@ -328,6 +330,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return;
       }
 
+      // ── Gen1 Feature Flag Gate ────────────────────────────────────────────
+      const maskedId = `${userId.substring(0, 8)}***`;
+      const runtimeMode = getRuntimeMode();
+
+      if (runtimeMode === 'gen1') {
+        const gen1Out = await execute({
+          userId,
+          message: userMessage,
+          session,
+          displayName,
+          replyToken,
+          timestamp: new Date().toISOString(),
+        });
+        await reply(gen1Out.text);
+        console.log('[GEN1_TRACE]', JSON.stringify(gen1Out.trace));
+        await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+        return;
+      }
+
+      if (runtimeMode === 'shadow') {
+        void execute({
+          userId,
+          message: userMessage,
+          session,
+          displayName,
+          replyToken,
+          timestamp: new Date().toISOString(),
+        }).then((out) => {
+          console.log('[GEN1_TRACE]', JSON.stringify({ ...out.trace, mode: 'shadow' }));
+        }).catch((err: unknown) => {
+          console.error('[GEN1_TRACE] shadow error:', err instanceof Error ? err.message : String(err));
+        });
+        // fall through to V1
+      }
+
       // ── 4. Debug logging ──────────────────────────────────────────────────
       const { score, total }          = getLeadCompleteness(userId);
       const missingHandoff            = getMissingFields(userId, HANDOFF_REQUIRED_FIELDS);
@@ -336,7 +373,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const isCT                      = isContactTrigger(userMessage);
       const isIT                      = isInterestTrigger(userMessage);
       const isUWT                     = isUnderwritingTrigger(userMessage);
-      const maskedId                  = `${userId.substring(0, 8)}***`;
       console.log(
         `[Lead] v=${CODE_VERSION}` +
         ` uid=${maskedId}` +
