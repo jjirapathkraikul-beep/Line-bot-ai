@@ -54,6 +54,14 @@ export interface RuntimeTrace {
   selectedAcpPaths?: string[];
   shouldInterruptCurrentState?: boolean;
   interruptReason?: string;
+  // Phase 10.3 additions — memory resolver
+  knownFields?: string[];
+  missingFields?: string[];
+  deferredFields?: string[];
+  neverAskAgainFields?: string[];
+  nextBestFieldToAsk?: string | null;
+  extractedFacts?: Array<{ field: string; value: string; confidence: number }>;
+  memoryDecisionReason?: string;
 }
 
 export interface RuntimeDecision {
