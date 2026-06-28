@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { execute } from '@/runtime-gen1/core/runtime';
 import { getRuntimeMode } from '@/runtime-gen1/core/runtimeMode';
+import { runGen1LineAdapter, stripGen1Prefix } from '@/runtime-gen1/adapters/line/lineAdapter';
 import { Client, validateSignature } from '@line/bot-sdk';
 import type { WebhookRequestBody, MessageEvent, TextEventMessage, TextMessage, PostbackEvent } from '@line/bot-sdk';
 import { fetchFaq } from '@/lib/sheet';
@@ -325,42 +325,50 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           return;
         }
 
+        // #gen1 <message> — admin-only Gen1 test regardless of AI_RUNTIME_MODE
+        const gen1Msg = stripGen1Prefix(userMessage);
+        if (gen1Msg !== null) {
+          console.log(`[Admin] command=#gen1 userId=${userId.substring(0, 8)}***`);
+          try {
+            const gen1Out = await runGen1LineAdapter({
+              userId, displayName, messageText: gen1Msg,
+              replyToken, timestamp: new Date().toISOString(), session,
+            });
+            await reply(
+              `[Gen1 Test] action=${gen1Out.decision} v=${gen1Out.runtimeVersion}\n${gen1Out.text}`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[Admin] #gen1 error: ${msg}`);
+            await reply(`❌ Gen1 error: ${msg}`);
+          }
+          await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
+          return;
+        }
+
         const result = handleAdminCommand(userId, userMessage, displayName);
         await reply(result.reply);
         return;
       }
 
       // ── Gen1 Feature Flag Gate ────────────────────────────────────────────
-      const maskedId = `${userId.substring(0, 8)}***`;
+      const maskedId    = `${userId.substring(0, 8)}***`;
       const runtimeMode = getRuntimeMode();
+      const adapterInput = {
+        userId, displayName, messageText: userMessage,
+        replyToken, timestamp: new Date().toISOString(), session,
+      };
 
       if (runtimeMode === 'gen1') {
-        const gen1Out = await execute({
-          userId,
-          message: userMessage,
-          session,
-          displayName,
-          replyToken,
-          timestamp: new Date().toISOString(),
-        });
+        const gen1Out = await runGen1LineAdapter(adapterInput);
         await reply(gen1Out.text);
-        console.log('[GEN1_TRACE]', JSON.stringify(gen1Out.trace));
         await saveSession(userId, dehydrateAll(userId, { ...session, displayName })).catch(logSessionErr);
         return;
       }
 
       if (runtimeMode === 'shadow') {
-        void execute({
-          userId,
-          message: userMessage,
-          session,
-          displayName,
-          replyToken,
-          timestamp: new Date().toISOString(),
-        }).then((out) => {
-          console.log('[GEN1_TRACE]', JSON.stringify({ ...out.trace, mode: 'shadow' }));
-        }).catch((err: unknown) => {
-          console.error('[GEN1_TRACE] shadow error:', err instanceof Error ? err.message : String(err));
+        void runGen1LineAdapter(adapterInput).catch((err: unknown) => {
+          console.error('[GEN1_LINE] shadow error:', err instanceof Error ? err.message : String(err));
         });
         // fall through to V1
       }
