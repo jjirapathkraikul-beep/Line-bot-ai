@@ -107,3 +107,17 @@ export async function getPendingAuditCandidates(limit: number): Promise<AuditCan
     return [];
   }
 }
+
+// Marks an audit record as REVIEWED in KV (used by LearningProcessor after processing).
+// Does not modify in-memory _queue — processor runs asynchronously, possibly cross-invocation.
+export async function markAuditProcessedInKv(sessionId: string): Promise<void> {
+  try {
+    const kv  = getKvClient();
+    const raw = await kv.get(`audit:byId:${sessionId}`);
+    if (!raw) return;
+    const candidate: AuditCandidate = { ...JSON.parse(raw) as AuditCandidate, status: 'REVIEWED' };
+    await kv.set(`audit:byId:${sessionId}`, JSON.stringify(candidate), { ex: AUDIT_TTL_SECONDS });
+  } catch (err) {
+    console.error('[AUDIT_MARK_PROCESSED_ERROR]', String(err));
+  }
+}
