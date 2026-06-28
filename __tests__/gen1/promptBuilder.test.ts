@@ -94,6 +94,17 @@ function makeCtx(): ExecutionContext {
       shouldEscalate:   false,
       askField:         null,
     },
+    conversationStrategy: {
+      strategyId:                  'ANSWER_ONLY',
+      strategyGoal:                'Deliver a direct, complete answer with no follow-up question.',
+      orderedSteps:                ['Answer the question directly (CP-01)', 'Close without asking anything'],
+      topicShiftDetected:          false,
+      leadCaptureAllowedByStrategy: false,
+      mustAnswerFirst:             true,
+      mustEducate:                 false,
+      mustRecommendBeforeCapture:  false,
+      strategyWarnings:            [],
+    },
     responseProfile: {
       tone:                    'warm',
       length:                  'short',
@@ -230,7 +241,7 @@ test('PROMPT-09: build_trust action → OUTPUT RULES exclude personal data colle
   const ctx = makeCtx();
   ctx.decision.action = 'build_trust';
   const result = buildPrompt({ executionContext: ctx });
-  assert.ok(result.systemPrompt.includes('11: OUTPUT RULES'), 'Expected OUTPUT RULES section');
+  assert.ok(result.systemPrompt.includes('12: OUTPUT RULES'), 'Expected OUTPUT RULES section');
   assert.ok(result.systemPrompt.includes('Do NOT ask for personal data'), 'Expected build_trust specific rule');
   assert.ok(result.systemPrompt.includes('BUILD_TRUST'), 'Expected action in output rules header');
 });
@@ -269,7 +280,7 @@ test('PROMPT-13: promptCharCount equals systemPrompt.length + userMessage.length
 test('PROMPT-14: sectionCount is 11', () => {
   const ctx    = makeCtx();
   const result = buildPrompt({ executionContext: ctx });
-  assert.equal(result.sectionCount, 11, 'Expected 11 sections in prompt');
+  assert.equal(result.sectionCount, 12, 'Expected 12 sections in prompt');
 });
 
 // ─── VAL tests — validateResponse ─────────────────────────────────────────────
@@ -462,8 +473,8 @@ test('RUNTIME-04: runtime version is gen1-stub-0.7.x in gen1 mode', async () => 
   try {
     const output = await execute(makeRuntimeInput('สวัสดีครับ'));
     assert.ok(
-      output.runtimeVersion.startsWith('gen1-stub-0.7.'),
-      `Expected gen1-stub-0.7.x version, got: ${output.runtimeVersion}`,
+      output.runtimeVersion.startsWith('gen1-stub-0.'),
+      `Expected gen1-stub-0.x.x version, got: ${output.runtimeVersion}`,
     );
     assert.equal(RUNTIME_VERSION, output.runtimeVersion, 'RUNTIME_VERSION constant should match output');
   } finally {

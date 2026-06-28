@@ -15,6 +15,7 @@ import type { RuntimeMemoryResolution, CaptureStage } from '../../runtime-gen1/m
 import type { KnowledgeSelectionResult } from '../../runtime-gen1/knowledge/knowledgeTypes';
 import type { RuntimeDecisionResult } from '../../runtime-gen1/decision/decisionTypes';
 import type { RuntimeInput } from '../../runtime-gen1/core/types';
+import type { ConversationStrategyResult } from '../../runtime-gen1/conversation/strategyTypes';
 
 // ─── Stub factories ───────────────────────────────────────────────────────────
 
@@ -257,6 +258,21 @@ function makeDecision(
   };
 }
 
+function makeStrategy(overrides: Partial<ConversationStrategyResult> = {}): ConversationStrategyResult {
+  return {
+    strategyId:                  'ANSWER_ONLY',
+    strategyGoal:                'Deliver a direct, complete answer with no follow-up question.',
+    orderedSteps:                ['Answer the question directly (CP-01)', 'Close without asking anything'],
+    topicShiftDetected:          false,
+    leadCaptureAllowedByStrategy: false,
+    mustAnswerFirst:             true,
+    mustEducate:                 false,
+    mustRecommendBeforeCapture:  false,
+    strategyWarnings:            [],
+    ...overrides,
+  };
+}
+
 function makeInput(
   message: string,
   intent: string,
@@ -273,31 +289,33 @@ function makeInput(
     memoryResult:     makeMemory(memoryOverrides),
     knowledgeResult:  makeKnowledge(knowledgeSources),
     decisionResult:   makeDecision(decisionAction, decisionOverrides),
+    strategyResult:   makeStrategy(),
   };
 }
 
 // ─── CTX-BUILD: Builder structural tests ─────────────────────────────────────
 
-test('CTX-BUILD-01: builder returns all 17 ExecutionContext sections', () => {
+test('CTX-BUILD-01: builder returns all 18 ExecutionContext sections', () => {
   const result = buildExecutionContext(makeInput('สวัสดีครับ', 'greeting'));
   const ctx = result.executionContext;
-  assert.ok(ctx.request,        'missing: request');
-  assert.ok(ctx.user,           'missing: user');
-  assert.ok(ctx.session,        'missing: session');
-  assert.ok(ctx.message,        'missing: message');
-  assert.ok(ctx.intent,         'missing: intent');
-  assert.ok(ctx.capability,     'missing: capability');
-  assert.ok(ctx.memory,         'missing: memory');
-  assert.ok(ctx.knowledge,      'missing: knowledge');
-  assert.ok(ctx.decision,       'missing: decision');
-  assert.ok(ctx.responseProfile,'missing: responseProfile');
-  assert.ok(ctx.restrictions,   'missing: restrictions');
-  assert.ok(ctx.escalation,     'missing: escalation');
-  assert.ok(ctx.leadPolicy,     'missing: leadPolicy');
-  assert.ok(ctx.trustPolicy,    'missing: trustPolicy');
-  assert.ok(ctx.medicalPolicy,  'missing: medicalPolicy');
-  assert.ok(ctx.analytics,      'missing: analytics');
-  assert.ok(ctx.trace,          'missing: trace');
+  assert.ok(ctx.request,               'missing: request');
+  assert.ok(ctx.user,                  'missing: user');
+  assert.ok(ctx.session,               'missing: session');
+  assert.ok(ctx.message,               'missing: message');
+  assert.ok(ctx.intent,                'missing: intent');
+  assert.ok(ctx.capability,            'missing: capability');
+  assert.ok(ctx.memory,                'missing: memory');
+  assert.ok(ctx.knowledge,             'missing: knowledge');
+  assert.ok(ctx.decision,              'missing: decision');
+  assert.ok(ctx.conversationStrategy,  'missing: conversationStrategy');
+  assert.ok(ctx.responseProfile,       'missing: responseProfile');
+  assert.ok(ctx.restrictions,          'missing: restrictions');
+  assert.ok(ctx.escalation,            'missing: escalation');
+  assert.ok(ctx.leadPolicy,            'missing: leadPolicy');
+  assert.ok(ctx.trustPolicy,           'missing: trustPolicy');
+  assert.ok(ctx.medicalPolicy,         'missing: medicalPolicy');
+  assert.ok(ctx.analytics,             'missing: analytics');
+  assert.ok(ctx.trace,                 'missing: trace');
 });
 
 test('CTX-BUILD-02: contextTrace.stepsCompleted = 15 (AIOS-ACE-03)', () => {

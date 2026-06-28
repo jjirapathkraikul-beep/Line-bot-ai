@@ -113,6 +113,15 @@ export interface RuntimeTrace {
   blockedCapabilities?: string[];
   decisionConfidence?: number;
   alternativeAction?: string | null;
+  // Phase Pre-10.9 additions — conversation strategy engine
+  strategyId?: string;
+  strategyGoal?: string;
+  topicShiftDetected?: boolean;
+  leadCaptureAllowedByStrategy?: boolean;
+  strategyMustAnswerFirst?: boolean;
+  strategyMustEducate?: boolean;
+  strategyMustRecommendBeforeCapture?: boolean;
+  strategyWarnings?: string[];
 }
 
 export interface RuntimeDecision {

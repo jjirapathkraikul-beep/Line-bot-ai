@@ -1,12 +1,12 @@
-// Gen1 Prompt Builder — Phase 10.7
-// Converts ExecutionContext into a deterministic 11-section system prompt.
+// Gen1 Prompt Builder — Phase Pre-10.9
+// Converts ExecutionContext into a deterministic 12-section system prompt.
 // Source: AIOS-AEE-06 (Response Composer), AIOS-ACE-12 (Response Profile).
 //
 // Sections:
 //   1. Role           2. Customer Message   3. Conversation Context
 //   4. Intent         5. Capability         6. Memory
 //   7. Knowledge      8. Decision           9. Restrictions
-//   10. Response Profile                   11. Output Rules
+//   10. Response Profile  11. Strategy      12. Output Rules
 
 import type { ExecutionContext } from '../context/contextTypes';
 
@@ -282,10 +282,38 @@ function buildResponseProfile(ctx: ExecutionContext): string {
   return lines.join('\n');
 }
 
+function buildStrategy(ctx: ExecutionContext): string {
+  const s = ctx.conversationStrategy;
+  const lines = [
+    '=== 11: CONVERSATION STRATEGY ===',
+    `Strategy:  ${s.strategyId}`,
+    `Goal:      ${s.strategyGoal}`,
+  ];
+  if (s.topicShiftDetected) {
+    lines.push('⚠️  TOPIC SHIFT DETECTED — previous flow cancelled. Follow the customer\'s new topic.');
+  }
+  lines.push('Ordered steps:');
+  s.orderedSteps.forEach((step, i) => lines.push(`  ${i + 1}. ${step}`));
+  const guards: string[] = [];
+  if (!s.leadCaptureAllowedByStrategy) guards.push('Lead capture NOT allowed by this strategy');
+  if (s.mustAnswerFirst)               guards.push('MUST answer before any question (CP-01)');
+  if (s.mustEducate)                   guards.push('MUST educate before capturing data (CP-03)');
+  if (s.mustRecommendBeforeCapture)    guards.push('MUST recommend before capturing lead (CP-07)');
+  if (guards.length > 0) {
+    lines.push('Strategy guards:');
+    guards.forEach((g) => lines.push(`  ⚠️  ${g}`));
+  }
+  if (s.strategyWarnings.length > 0) {
+    lines.push('Strategy warnings:');
+    s.strategyWarnings.forEach((w) => lines.push(`  ⚡ ${w}`));
+  }
+  return lines.join('\n');
+}
+
 function buildOutputRules(ctx: ExecutionContext): string {
   const action  = ctx.decision.action as string;
   const specific = ACTION_OUTPUT_RULES[action] ?? ACTION_OUTPUT_RULES['fallback']!;
-  const lines   = ['=== 11: OUTPUT RULES ==='];
+  const lines   = ['=== 12: OUTPUT RULES ==='];
 
   // Universal rules (always present)
   lines.push('Universal rules (always apply):');
@@ -333,6 +361,7 @@ export function buildPrompt(input: PromptBuilderInput): PromptBuilderResult {
     buildDecision(ctx),
     buildRestrictions(ctx),
     buildResponseProfile(ctx),
+    buildStrategy(ctx),
     buildOutputRules(ctx),
   ];
 

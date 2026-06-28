@@ -18,6 +18,7 @@ import type {
   ContextKnowledge,
   ContextKnowledgeFragment,
   ContextDecision,
+  ContextConversationStrategy,
   ResponseProfile,
   ContextRestriction,
   ContextRestrictions,
@@ -246,6 +247,24 @@ function buildDecision(input: ContextBuilderInput): ContextDecision {
     shouldCollectLead: decisionResult.shouldCollectLead,
     shouldEscalate:   decisionResult.shouldEscalate,
     askField:         decisionResult.askField,
+  };
+}
+
+// ─── Step 06 / Conversation Strategy ─────────────────────────────────────────
+// Phase Pre-10.9: lift strategy result into the canonical ExecutionContext.
+
+function buildConversationStrategy(input: ContextBuilderInput): ContextConversationStrategy {
+  const { strategyResult } = input;
+  return {
+    strategyId:                  strategyResult.strategyId,
+    strategyGoal:                strategyResult.strategyGoal,
+    orderedSteps:                strategyResult.orderedSteps,
+    topicShiftDetected:          strategyResult.topicShiftDetected,
+    leadCaptureAllowedByStrategy: strategyResult.leadCaptureAllowedByStrategy,
+    mustAnswerFirst:             strategyResult.mustAnswerFirst,
+    mustEducate:                 strategyResult.mustEducate,
+    mustRecommendBeforeCapture:  strategyResult.mustRecommendBeforeCapture,
+    strategyWarnings:            strategyResult.strategyWarnings,
   };
 }
 
@@ -571,27 +590,28 @@ export function buildExecutionContext(input: ContextBuilderInput): ContextBuilde
   const warnings: string[] = [];
 
   // Steps 01–12: assemble all sections
-  const request        = buildRequest(input);
-  const user           = buildUser(input);
-  const session        = buildSession(input);
-  const message        = buildMessage(input);
-  const intent         = buildIntent(input);
-  const capability     = buildCapability(input);
-  const memory         = buildMemory(input);
-  const knowledge      = buildKnowledge(input);
-  const decision       = buildDecision(input);
-  const responseProfile = buildResponseProfile(input);
-  const restrictions   = buildRestrictions(input);
-  const escalation     = buildEscalation(input);
-  const leadPolicy     = buildLeadPolicy(input);
-  const trustPolicy    = buildTrustPolicy(input);
-  const medicalPolicy  = buildMedicalPolicy(input);
+  const request               = buildRequest(input);
+  const user                  = buildUser(input);
+  const session               = buildSession(input);
+  const message               = buildMessage(input);
+  const intent                = buildIntent(input);
+  const capability            = buildCapability(input);
+  const memory                = buildMemory(input);
+  const knowledge             = buildKnowledge(input);
+  const decision              = buildDecision(input);
+  const conversationStrategy  = buildConversationStrategy(input);
+  const responseProfile       = buildResponseProfile(input);
+  const restrictions          = buildRestrictions(input);
+  const escalation            = buildEscalation(input);
+  const leadPolicy            = buildLeadPolicy(input);
+  const trustPolicy           = buildTrustPolicy(input);
+  const medicalPolicy         = buildMedicalPolicy(input);
 
   // Step 13: compress
   const partialContext: Omit<ExecutionContext, 'analytics' | 'trace'> = {
     request, user, session, message, intent, capability,
-    memory, knowledge, decision, responseProfile, restrictions,
-    escalation, leadPolicy, trustPolicy, medicalPolicy,
+    memory, knowledge, decision, conversationStrategy, responseProfile,
+    restrictions, escalation, leadPolicy, trustPolicy, medicalPolicy,
   };
 
   // Step 13: compress (analytics and trace added after)

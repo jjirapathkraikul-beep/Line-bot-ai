@@ -5,12 +5,13 @@ import { loadCapability } from '../capability/capabilityLoader';
 import { resolveMemory } from '../memory/memoryResolver';
 import { resolveKnowledge } from '../knowledge/knowledgeResolver';
 import { makeDecision } from '../decision/decisionEngine';
+import { selectConversationStrategy } from '../conversation/strategyEngine';
 import { buildExecutionContext } from '../context/contextBuilder';
 import { buildPrompt } from '../response/promptBuilder';
 import { generateResponse, GEN1_SAFE_FALLBACK_TEXT } from '../response/llmAdapter';
 import { validateResponse } from '../response/responseValidator';
 
-export const RUNTIME_VERSION = 'gen1-stub-0.7.0';
+export const RUNTIME_VERSION = 'gen1-stub-0.8.0';
 
 const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่นใหม่กำลังทำงานครับ 😊';
 
@@ -30,8 +31,11 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
   // Step 5: Decision engine
   const decisionResult = makeDecision({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult });
 
-  // Step 6: Context builder
-  const contextResult = buildExecutionContext({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult, decisionResult });
+  // Step 6: Conversation Strategy Engine
+  const strategyResult = selectConversationStrategy({ intentResult, capabilityResult, memoryResult, decisionResult });
+
+  // Step 7: Context builder
+  const contextResult = buildExecutionContext({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult, decisionResult, strategyResult });
 
   const trace: RuntimeTrace = {
     mode:            getRuntimeMode(),
@@ -84,6 +88,15 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
     blockedCapabilities:       decisionResult.blockedCapabilities,
     decisionConfidence:        decisionResult.decisionTrace.confidence,
     alternativeAction:         decisionResult.decisionTrace.alternativeAction,
+    // Phase Pre-10.9 — conversation strategy engine
+    strategyId:                        strategyResult.strategyId,
+    strategyGoal:                      strategyResult.strategyGoal,
+    topicShiftDetected:                strategyResult.topicShiftDetected,
+    leadCaptureAllowedByStrategy:      strategyResult.leadCaptureAllowedByStrategy,
+    strategyMustAnswerFirst:           strategyResult.mustAnswerFirst,
+    strategyMustEducate:               strategyResult.mustEducate,
+    strategyMustRecommendBeforeCapture: strategyResult.mustRecommendBeforeCapture,
+    strategyWarnings:                  strategyResult.strategyWarnings,
     // Phase 10.6 — context builder
     contextBuilt:              true,
     contextValidationPassed:   contextResult.validation.passed,

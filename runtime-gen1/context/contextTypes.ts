@@ -9,6 +9,7 @@ import type { CapabilityLoaderResult } from '../capability/capabilityLoader';
 import type { RuntimeMemoryResolution } from '../memory/memoryTypes';
 import type { KnowledgeSelectionResult } from '../knowledge/knowledgeTypes';
 import type { RuntimeDecisionResult } from '../decision/decisionTypes';
+import type { ConversationStrategyResult } from '../conversation/strategyTypes';
 
 // ─── Builder I/O ─────────────────────────────────────────────────────────────
 
@@ -19,6 +20,7 @@ export interface ContextBuilderInput {
   memoryResult: RuntimeMemoryResolution;
   knowledgeResult: KnowledgeSelectionResult;
   decisionResult: RuntimeDecisionResult;
+  strategyResult: ConversationStrategyResult;
 }
 
 export interface ContextBuilderResult {
@@ -207,6 +209,21 @@ export interface ContextMedicalPolicy {
   disclaimerRequired: boolean;
 }
 
+// ─── Conversation strategy section ───────────────────────────────────────────
+// Phase Pre-10.9: strategy engine output, inserted before response profile in context.
+
+export interface ContextConversationStrategy {
+  strategyId: string;
+  strategyGoal: string;
+  orderedSteps: string[];
+  topicShiftDetected: boolean;
+  leadCaptureAllowedByStrategy: boolean;
+  mustAnswerFirst: boolean;
+  mustEducate: boolean;
+  mustRecommendBeforeCapture: boolean;
+  strategyWarnings: string[];
+}
+
 // ─── Analytics section ────────────────────────────────────────────────────────
 
 export interface ContextAnalytics {
@@ -263,6 +280,7 @@ export interface ExecutionContext {
   memory: ContextMemory;
   knowledge: ContextKnowledge;
   decision: ContextDecision;
+  conversationStrategy: ContextConversationStrategy;
   responseProfile: ResponseProfile;
   restrictions: ContextRestrictions;
   escalation: ContextEscalation;
