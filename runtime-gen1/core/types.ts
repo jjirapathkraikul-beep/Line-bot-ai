@@ -1,5 +1,15 @@
 export type RuntimeMode = 'v1' | 'gen1' | 'shadow';
 
+// A single prior conversation turn loaded from KV history.
+// Used by memoryResolver (fact extraction) and promptBuilder (history section).
+export interface ConversationTurnContext {
+  sessionId:         string;
+  userMessage:       string;
+  assistantResponse: string;
+  timestamp:         string;
+  intent:            string;
+}
+
 export interface RuntimeInput {
   userId: string;
   message: string;

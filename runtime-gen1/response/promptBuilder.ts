@@ -9,11 +9,13 @@
 //   10. Response Profile  11. Strategy      12. Output Rules
 
 import type { ExecutionContext } from '../context/contextTypes';
+import type { ConversationTurnContext } from '../core/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface PromptBuilderInput {
   executionContext: ExecutionContext;
+  conversationHistory?: ConversationTurnContext[];
 }
 
 export interface PromptBuilderResult {
@@ -339,6 +341,26 @@ function buildFollowupGuidance(ctx: ExecutionContext): string {
   return lines.join('\n');
 }
 
+function buildConversationHistory(turns: ConversationTurnContext[]): string {
+  if (turns.length === 0) return '';
+  const lines = ['=== 13: RECENT CONVERSATION HISTORY ==='];
+  lines.push('Prior turns from this conversation (oldest → newest):');
+  lines.push('');
+  turns.forEach((turn, i) => {
+    lines.push(`[Turn ${i + 1} — intent: ${turn.intent}]`);
+    lines.push(`Customer: ${turn.userMessage}`);
+    lines.push(`Advisor:  ${turn.assistantResponse}`);
+    if (i < turns.length - 1) lines.push('');
+  });
+  lines.push('');
+  lines.push('→ RULES when this section is present:');
+  lines.push('  • NEVER say you cannot see previous messages — the history above is available to you');
+  lines.push('  • If customer says "ฉันตอบไปแล้ว", "บอกไปแล้ว", "ย้อนอ่าน" — inspect this history first');
+  lines.push('  • Do NOT re-ask any fact the customer already stated in the turns above');
+  lines.push('  • Before asking a question, summarize what is already known from history');
+  return lines.join('\n');
+}
+
 function buildOutputRules(ctx: ExecutionContext): string {
   const action  = ctx.decision.action as string;
   const specific = ACTION_OUTPUT_RULES[action] ?? ACTION_OUTPUT_RULES['fallback']!;
@@ -372,6 +394,7 @@ function buildOutputRules(ctx: ExecutionContext): string {
   lines.push('  6. Keep paragraph length to 2–3 sentences maximum; use bullet lists for multiple items');
   lines.push('  7. Memory continuity (CP-05): Before asking any question, check Section 6. If age/budget/health/product interest are already known → USE them, NEVER re-ask.');
   lines.push('  8. Conversation flow: Answer → Educate → Recommend → ONE follow-up. Never ask two questions in the same response.');
+  lines.push('  9. Conversation history (Section 13): If history is present, reference it instead of claiming you cannot see prior messages. Never re-ask facts already stated there.');
 
   // P0-002: strategy-driven execution order (strategy is single source of truth — overrides action-specific rules below)
   lines.push('');
@@ -421,6 +444,11 @@ export function buildPrompt(input: PromptBuilderInput): PromptBuilderResult {
     buildStrategy(ctx),
     buildOutputRules(ctx),
   ];
+
+  const historySection = buildConversationHistory(input.conversationHistory ?? []);
+  if (historySection) {
+    sections.push(historySection);
+  }
 
   const systemPrompt  = sections.join('\n\n');
   const userMessage   = ctx.request.rawInput;

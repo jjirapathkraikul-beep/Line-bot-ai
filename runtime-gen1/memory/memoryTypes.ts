@@ -142,11 +142,12 @@ export interface RuntimeMemoryResolution {
 
   // Audit trace
   memoryTrace: {
-    fieldsFromSession: string[];
-    fieldsFromMessage: string[];
-    fieldsBlocked: string[];
+    fieldsFromSession:  string[];
+    fieldsFromMessage:  string[];
+    fieldsFromHistory:  string[];  // facts extracted from KV conversation history
+    fieldsBlocked:      string[];
     leadCaptureAllowed: boolean;
-    trustActive: boolean;
-    medicalActive: boolean;
+    trustActive:        boolean;
+    medicalActive:      boolean;
   };
 }

@@ -1,8 +1,9 @@
-// Conversation Logger — Beta Release + KV Persistence Hotfix
+// Conversation Logger — KV Persistence + History Loader
 // Emits [CONV_LOG] to console (always) and persists to Vercel KV (best-effort).
 // KV failures are silently swallowed — customers are never affected by logging errors.
 
 import { getKvClient } from './kvClient';
+import type { ConversationTurnContext } from '../core/types';
 
 export const CONV_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
@@ -42,17 +43,23 @@ export function buildConversationId(userId: string, timestamp: string): string {
 }
 
 // Emits console log synchronously, then persists to KV asynchronously.
-// Returns a Promise so callers in runtime.ts can await it for reliable Vercel writes.
 export async function logConversationTurn(entry: ConversationLogEntry): Promise<void> {
-  // Console emit is always sync-first — never depends on KV.
   console.log('[CONV_LOG]', JSON.stringify(entry));
 
   const date = entry.timestamp.substring(0, 10);
   try {
     const kv = getKvClient();
+    // Latest-per-conversation index (for getConversationById)
     await kv.set(`convlog:byId:${entry.conversationId}`, JSON.stringify(entry), { ex: CONV_TTL_SECONDS });
+    // Per-turn storage (for history loading — each turn is individually addressable)
+    await kv.set(`convlog:turn:${entry.sessionId}`, JSON.stringify(entry), { ex: CONV_TTL_SECONDS });
+    // Ordered list of sessionIds per conversation (newest first via LPUSH)
+    await kv.lpush(`convlog:turns:${entry.conversationId}`, entry.sessionId);
+    await kv.expire(`convlog:turns:${entry.conversationId}`, CONV_TTL_SECONDS);
+    // Date index
     await kv.lpush(`convlog:date:${date}`, entry.conversationId);
     await kv.expire(`convlog:date:${date}`, CONV_TTL_SECONDS);
+    // Global recent list
     await kv.lpush('convlog:recent', entry.conversationId);
     await kv.expire('convlog:recent', CONV_TTL_SECONDS);
   } catch (err) {
@@ -60,8 +67,43 @@ export async function logConversationTurn(entry: ConversationLogEntry): Promise<
   }
 }
 
+// ─── History loader ───────────────────────────────────────────────────────────
+// Loads recent turns for the same user-day from KV.
+// Returns oldest-first so callers can build chronological context.
+
+export async function getRecentConversationTurnsForUser(
+  userId: string,
+  date: string,
+  limit = 10,
+): Promise<ConversationTurnContext[]> {
+  try {
+    const conversationId = buildConversationId(userId, date);
+    const kv = getKvClient();
+    // LPUSH means most recent sessionId is at index 0
+    const sessionIds = await kv.lrange(`convlog:turns:${conversationId}`, 0, limit - 1);
+    const turns = await Promise.all(
+      sessionIds.map(async (sessionId) => {
+        const raw = await kv.get(`convlog:turn:${sessionId}`);
+        if (!raw) return null;
+        const entry = JSON.parse(raw) as ConversationLogEntry;
+        return {
+          sessionId:         entry.sessionId,
+          userMessage:       entry.userMessage,
+          assistantResponse: entry.assistantResponse,
+          timestamp:         entry.timestamp,
+          intent:            entry.intent,
+        } as ConversationTurnContext;
+      }),
+    );
+    const valid = turns.filter((t): t is ConversationTurnContext => t !== null);
+    return valid.reverse(); // oldest first for chronological context
+  } catch (err) {
+    console.error('[CONV_HISTORY_LOAD_ERROR]', String(err));
+    return [];
+  }
+}
+
 // ─── Read helpers ─────────────────────────────────────────────────────────────
-// Used by audit workflows and AI agents (Claude, ChatGPT, Codex) for review.
 
 export async function getConversationById(conversationId: string): Promise<ConversationLogEntry | null> {
   try {

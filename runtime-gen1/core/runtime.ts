@@ -11,10 +11,11 @@ import { buildPrompt } from '../response/promptBuilder';
 import { generateResponse, GEN1_SAFE_FALLBACK_TEXT } from '../response/llmAdapter';
 import { validateResponse } from '../response/responseValidator';
 import { formatResponse } from '../response/responseFormatter';
-import { buildConversationId, logConversationTurn } from '../observability/conversationLogger';
+import { buildConversationId, logConversationTurn, getRecentConversationTurnsForUser } from '../observability/conversationLogger';
 import { enqueueAudit } from '../observability/auditQueue';
 import { recordMetric } from '../observability/runtimeMetrics';
 import type { ConversationLogEntry } from '../observability/conversationLogger';
+import type { ConversationTurnContext } from './types';
 
 export const RUNTIME_VERSION = 'gen1-stub-0.9.0';
 
@@ -30,14 +31,32 @@ const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่น
 export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
   const startTime = Date.now();
 
+  // ── History load: pull prior turns from KV before the pipeline runs ──────────
+  // Failure is silent — history is best-effort; customer response is never blocked.
+  const today = input.timestamp.substring(0, 10);
+  let conversationHistory: ConversationTurnContext[] = [];
+  let historyLoadError: string | null = null;
+  try {
+    conversationHistory = await getRecentConversationTurnsForUser(input.userId, today, 10);
+  } catch (err) {
+    historyLoadError = err instanceof Error ? err.message : String(err);
+  }
+
   // ── Steps 1–6: Intent → Capability → Memory → Knowledge → Decision → Strategy → Context ──
   const intentResult     = detectIntent(input.message);
   const capabilityResult = loadCapability(intentResult);
-  const memoryResult     = resolveMemory({ runtimeInput: input, intentResult, capabilityResult });
+  const memoryResult     = resolveMemory({ runtimeInput: input, intentResult, capabilityResult, conversationHistory });
   const knowledgeResult  = await resolveKnowledge({ intentResult, capabilityResult, memoryResult });
   const decisionResult   = makeDecision({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult });
   const strategyResult   = selectConversationStrategy({ intentResult, capabilityResult, memoryResult, decisionResult });
   const contextResult    = buildExecutionContext({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult, decisionResult, strategyResult });
+
+  console.log('[MEMORY_HISTORY]', JSON.stringify({
+    loadedTurns:                     conversationHistory.length,
+    extractedKnownFieldsFromHistory: memoryResult.memoryTrace.fieldsFromHistory,
+    historyAvailable:                conversationHistory.length > 0,
+    historyLoadError,
+  }));
 
   // Base trace — all fields derived from steps 1–6 (populated before LLM, safe to use in catch)
   const trace: RuntimeTrace = {
@@ -118,7 +137,7 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
 
   // ── Steps 7–10: Prompt → LLM → Validator → Formatter ────────────────────────
   try {
-    const promptResult    = buildPrompt({ executionContext: contextResult.executionContext });
+    const promptResult    = buildPrompt({ executionContext: contextResult.executionContext, conversationHistory });
     const llmResult       = await generateResponse({
       systemPrompt: promptResult.systemPrompt,
       userMessage:  promptResult.userMessage,

@@ -1,4 +1,4 @@
-import type { RuntimeInput } from '../core/types';
+import type { RuntimeInput, ConversationTurnContext } from '../core/types';
 import type { IntentDetectorResult } from '../capability/intentDetector';
 import type { CapabilityLoaderResult } from '../capability/capabilityLoader';
 import { normTH } from '../capability/intentDetector';
@@ -22,6 +22,7 @@ export interface MemoryResolverInput {
   runtimeInput: RuntimeInput;
   intentResult: IntentDetectorResult;
   capabilityResult: CapabilityLoaderResult;
+  conversationHistory?: ConversationTurnContext[];  // prior turns from KV (oldest first)
 }
 
 // ─── V1 session shape (read-only; frozen V1 schema) ──────────────────────────
@@ -554,12 +555,30 @@ export function resolveMemory(input: MemoryResolverInput): RuntimeMemoryResoluti
   const { runtimeInput, intentResult, capabilityResult } = input;
   const sess = safeV1Session(runtimeInput.session);
 
-  // Step 1: Extract facts from current message
+  // Step 1a: Extract facts from current message
   const messageExtracted = extractFactsFromMessage(runtimeInput.message);
+
+  // Step 1b: Extract facts from conversation history (prior turns from KV).
+  // History facts use slightly lower confidence so the current message always wins on conflict.
+  // Order: history first → current message last → current message overrides.
+  const historyExtracted: ExtractedFact[] = [];
+  if (input.conversationHistory && input.conversationHistory.length > 0) {
+    const seenFields = new Set<string>();
+    for (const turn of input.conversationHistory) {
+      const turnFacts = extractFactsFromMessage(turn.userMessage);
+      for (const fact of turnFacts) {
+        if (!seenFields.has(fact.field)) {
+          seenFields.add(fact.field);
+          historyExtracted.push({ ...fact, confidence: fact.confidence * 0.85 });
+        }
+      }
+    }
+  }
 
   // Step 2: Infer interest_category from intent if not already extracted
   const inferredFacts: ExtractedFact[] = [];
-  const hasInterestCategory = messageExtracted.some((f) => f.field === 'interest_category');
+  const hasInterestCategory = messageExtracted.some((f) => f.field === 'interest_category')
+    || historyExtracted.some((f) => f.field === 'interest_category');
   const hasSessionInterest  = !!(sess.data?.product_interest);
   if (!hasInterestCategory && !hasSessionInterest) {
     const inferred = INTENT_CATEGORY_MAP[intentResult.intent];
@@ -578,7 +597,9 @@ export function resolveMemory(input: MemoryResolverInput): RuntimeMemoryResoluti
       });
     }
   }
-  const extractedFacts = [...messageExtracted, ...inferredFacts];
+
+  // History first so current message facts overwrite on the same field
+  const extractedFacts = [...historyExtracted, ...messageExtracted, ...inferredFacts];
 
   // Step 3: Build typed memory objects
   const customerProfile    = buildCustomerProfile(sess, extractedFacts, runtimeInput.displayName);
@@ -593,9 +614,10 @@ export function resolveMemory(input: MemoryResolverInput): RuntimeMemoryResoluti
 
   const knownFields = [...customerProfile.fields_captured];
 
-  // Fields from session vs. extracted this turn (for audit trace)
+  // Field source breakdown for audit trace
   const sessionFieldNames = sessionFieldsFromV1Data(sess.data ?? {});
-  const messageFieldNames = extractedFacts.map((f) => f.field);
+  const historyFieldNames = historyExtracted.map((f) => f.field);
+  const messageFieldNames = messageExtracted.map((f) => f.field);
   const blockedFieldNames = deferredFields.map((f) => f.field);
 
   return {
@@ -613,12 +635,13 @@ export function resolveMemory(input: MemoryResolverInput): RuntimeMemoryResoluti
     extractedFacts,
     memoryDecisionReason,
     memoryTrace: {
-      fieldsFromSession:    sessionFieldNames,
-      fieldsFromMessage:    messageFieldNames,
-      fieldsBlocked:        blockedFieldNames,
-      leadCaptureAllowed:   trustMemory.leadCaptureAllowed,
-      trustActive:          trustMemory.trustConcernActive,
-      medicalActive:        medicalMemory.medicalConcernActive,
+      fieldsFromSession:  sessionFieldNames,
+      fieldsFromMessage:  messageFieldNames,
+      fieldsFromHistory:  historyFieldNames,
+      fieldsBlocked:      blockedFieldNames,
+      leadCaptureAllowed: trustMemory.leadCaptureAllowed,
+      trustActive:        trustMemory.trustConcernActive,
+      medicalActive:      medicalMemory.medicalConcernActive,
     },
   };
 }
