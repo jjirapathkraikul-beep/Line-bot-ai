@@ -57,15 +57,17 @@ const ACTION_OUTPUT_RULES: Record<string, string[]> = {
     'Short response — maximum 30 words.',
   ],
   educate: [
-    'Explain the concept clearly before any product mention.',
-    'Use simple Thai language suitable for a first-time insurance customer.',
-    'After educating, may end with ONE soft follow-up question.',
+    'Structure: (1) คืออะไร — define in plain Thai in 1–2 sentences (2) เหมาะกับใคร — who benefits most (3) สิ่งสำคัญที่ต้องรู้ — one key consideration (4) ขั้นตอนต่อไป — optional soft question only',
+    'No marketing language: never use "ดีที่สุด", "คุ้มที่สุด", "พิเศษ", "สุดยอด".',
+    'Assume first-time insurance customer — explain in everyday Thai, not jargon.',
+    'End with at most ONE soft follow-up question if appropriate.',
   ],
   recommend: [
-    'Present recommendation with clear reasoning.',
-    'Do NOT over-promise or guarantee outcomes.',
-    'Reference the customer\'s situation from Known Facts.',
-    'May include ONE clarifying question at the end.',
+    'Structure: (1) Name the product that fits and WHY it suits this customer specifically (2) Reason — cite the customer\'s own facts from Section 6 Memory (3) Next step — one practical action only',
+    'Open with their situation: "จากที่คุณบอกว่า [age/budget/condition]..." — always personalize from Section 6.',
+    'NEVER ask for contact information (name, phone, LINE ID) immediately after recommending.',
+    'ONE optional gentle follow-up may ask about preferences or concerns — NOT lead data collection.',
+    'No guarantee language. No marketing superlatives ("ดีที่สุด", "คุ้มที่สุด").',
   ],
   handoff: [
     'Warmly inform the customer that Jirawat will personally assist them.',
@@ -110,6 +112,9 @@ function buildRole(ctx: ExecutionContext): string {
     'You assist Thai customers with insurance planning and financial guidance — professional, warm, and honest.',
     'You are NOT a general-purpose AI. Respond ONLY about insurance and financial planning.',
     'You represent Jirawat Jirapathkraikul personally — every response must reflect his advisory standards.',
+    'Advisor voice: Respond naturally as a Thai financial advisor — not a chatbot.',
+    '  Preferred: "จากข้อมูลที่คุณให้มาครับ..." | "โดยทั่วไปแล้ว..." | "ในกรณีลักษณะนี้..."',
+    '  Avoid: opening with AI filler, repeating the same phrase twice, robotic corporate language.',
     `Active ACP:       ${ctx.capability.primary.name} (${ctx.capability.primary.acpPath})`,
     `Decision Action:  ${ctx.decision.action.toUpperCase()}`,
     `Priority:         ${ctx.decision.priority}`,
@@ -187,11 +192,12 @@ function buildMemory(ctx: ExecutionContext): string {
   const lines = ['=== 6: MEMORY — KNOWN CUSTOMER FACTS ==='];
   if (ctx.memory.knownFacts.length > 0) {
     ctx.memory.knownFacts.forEach((f) => lines.push(`  ${f.field}: ${f.value}`));
+    lines.push('→ CRITICAL: USE these facts — reference them naturally in your response. NEVER re-ask for any field listed above.');
   } else {
     lines.push('  (no facts captured yet)');
   }
   if (ctx.memory.missingRequired.length > 0) {
-    lines.push(`Not yet collected: ${ctx.memory.missingRequired.join(', ')}`);
+    lines.push(`Not yet collected (may ask ONE of these if appropriate): ${ctx.memory.missingRequired.join(', ')}`);
   }
   if (ctx.leadPolicy.knownFields.length > 0) {
     lines.push(`NEVER ASK AGAIN (already captured): ${ctx.leadPolicy.knownFields.join(', ')}`);
@@ -310,6 +316,29 @@ function buildStrategy(ctx: ExecutionContext): string {
   return lines.join('\n');
 }
 
+function buildFollowupGuidance(ctx: ExecutionContext): string {
+  if (ctx.responseProfile.questionStrategy === 'no_question') return '';
+  const intent = ctx.intent.primary;
+  const lines  = ['Intent-appropriate follow-up (when asking ONE question this turn — CQ-001):'];
+  if (ctx.intent.isMedicalSignal) {
+    lines.push('  Use: "แพทย์วินิจฉัยแล้วหรือยังครับ" or "ตอนนี้กำลังรักษาอยู่หรืออยู่ระหว่างตรวจเพิ่มเติมครับ"');
+  } else if (intent === 'cancer_insurance') {
+    lines.push('  Use: "ตอนนี้กำลังรักษาอยู่หรืออยู่ระหว่างตรวจเพิ่มเติมครับ" or "มีประวัติโรคที่เกี่ยวกับมะเร็งไหมครับ"');
+  } else if (intent === 'health_insurance') {
+    lines.push('  Use: "ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ" or "มีโรคประจำตัวหรือประวัติสุขภาพที่ต้องพิจารณาไหมครับ"');
+  } else if (intent === 'retirement_planning' || intent === 'investment_linked') {
+    lines.push('  Use: "เป้าหมายเกษียณที่อยากได้ต่อเดือนประมาณเท่าไรครับ" or "วางแผนจะเกษียณอายุเท่าไรครับ"');
+  } else if (intent === 'tax_planning') {
+    lines.push('  Use: "ต้องการลดหย่อนภาษีปีนี้ประมาณเท่าไรครับ" or "มีประกันชีวิตที่ทำอยู่แล้วไหมครับ"');
+  } else if (ctx.intent.isRecommendationIntent) {
+    lines.push('  Use: "ตอนนี้มองหาความคุ้มครองด้านไหนเป็นหลักครับ — สุขภาพ ชีวิต หรือเกษียณ"');
+  } else {
+    lines.push('  Ask the highest-value unknown: age (อายุ) if unknown → budget (งบประมาณ) if unknown → health status (สุขภาพทั่วไป) if unknown');
+  }
+  lines.push('  NEVER use: "มีอะไรให้ช่วยอีกไหมครับ" — generic dead-end that does not advance the conversation');
+  return lines.join('\n');
+}
+
 function buildOutputRules(ctx: ExecutionContext): string {
   const action  = ctx.decision.action as string;
   const specific = ACTION_OUTPUT_RULES[action] ?? ACTION_OUTPUT_RULES['fallback']!;
@@ -341,6 +370,8 @@ function buildOutputRules(ctx: ExecutionContext): string {
   lines.push('  4. Do NOT use any phrase listed as prohibited in the Restrictions or Response Profile sections');
   lines.push('  5. Never open with filler phrases: "ขอบคุณสำหรับคำถาม", "ยินดีที่จะช่วย", "นั่นเป็นคำถามที่น่าสนใจ"');
   lines.push('  6. Keep paragraph length to 2–3 sentences maximum; use bullet lists for multiple items');
+  lines.push('  7. Memory continuity (CP-05): Before asking any question, check Section 6. If age/budget/health/product interest are already known → USE them, NEVER re-ask.');
+  lines.push('  8. Conversation flow: Answer → Educate → Recommend → ONE follow-up. Never ask two questions in the same response.');
 
   // P0-002: strategy-driven execution order (strategy is single source of truth — overrides action-specific rules below)
   lines.push('');
@@ -361,6 +392,12 @@ function buildOutputRules(ctx: ExecutionContext): string {
   lines.push('');
   lines.push(`Action-specific rules for ${action.toUpperCase()} (secondary — strategy steps above take precedence):`);
   specific.forEach((r, i) => lines.push(`  ${i + 1}. ${r}`));
+
+  const followup = buildFollowupGuidance(ctx);
+  if (followup) {
+    lines.push('');
+    lines.push(followup);
+  }
 
   return lines.join('\n');
 }

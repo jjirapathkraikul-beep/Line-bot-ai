@@ -175,6 +175,17 @@ test('PREFIX-05: trims whitespace from both the prefix and the result', () => {
   assert.equal(result, 'สวัสดีครับ');
 });
 
+test('PREFIX-06: no space after prefix — "#gen1ข้อความ" strips correctly (CQ-007)', () => {
+  assert.equal(stripGen1Prefix('#gen1ข้อความ'),         'ข้อความ');
+  assert.equal(stripGen1Prefix('#gen1Cancer Care คืออะไร'), 'Cancer Care คืออะไร');
+  assert.equal(stripGen1Prefix('#gen1สนใจประกัน'),      'สนใจประกัน');
+});
+
+test('PREFIX-07: multiple spaces after prefix — "#gen1   ข้อความ" strips to trimmed text (CQ-007)', () => {
+  assert.equal(stripGen1Prefix('#gen1   ข้อความ'),      'ข้อความ');
+  assert.equal(stripGen1Prefix('#gen1      มิจฉาชีพไหม'), 'มิจฉาชีพไหม');
+});
+
 // ─── ADAPTER tests — runGen1LineAdapter always runs gen1 pipeline ─────────────
 // runGen1LineAdapter calls executeGen1() directly — AI_RUNTIME_MODE is ignored.
 

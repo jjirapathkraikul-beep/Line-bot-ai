@@ -67,16 +67,14 @@ export function buildLogEntry(output: RuntimeOutput, timestamp: string): LineTra
   };
 }
 
-// Strip the "#gen1 " prefix from an admin test command.
-// Returns the real message text, or null if input is not a #gen1 command or has no message.
+// Strip the "#gen1" prefix (with any amount of following whitespace) from an admin test command.
+// Accepts: '#gen1 msg', '#gen1msg', '#gen1   msg' (CQ-007 parser robustness)
+// Returns the real message text, or null if input is not a #gen1 command or has no message body.
 export function stripGen1Prefix(message: string): string | null {
   const trimmed = message.trim();
-  const PREFIX  = '#gen1 ';
-  if (trimmed.toLowerCase().startsWith(PREFIX)) {
-    const stripped = trimmed.substring(PREFIX.length).trim();
-    return stripped.length > 0 ? stripped : null;
-  }
-  return null;
+  if (!trimmed.toLowerCase().startsWith('#gen1')) return null;
+  const after = trimmed.substring('#gen1'.length).trim();
+  return after.length > 0 ? after : null;
 }
 
 // ─── Main adapter ─────────────────────────────────────────────────────────────

@@ -277,6 +277,53 @@ test('PROMPT-13: promptCharCount equals systemPrompt.length + userMessage.length
   assert.equal(result.promptCharCount, expected, 'Expected promptCharCount to equal sum of char lengths');
 });
 
+test('PROMPT-14: isMedicalSignal=true → output rules include medical-specific follow-up guidance (CQ-001)', () => {
+  const ctx = makeCtx();
+  ctx.intent.isMedicalSignal = true;
+  ctx.responseProfile.questionStrategy = 'one_question';
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('แพทย์วินิจฉัยแล้วหรือยังครับ'), 'Expected medical follow-up question in output rules');
+});
+
+test('PROMPT-15: recommend action → output rules prohibit asking for contact info after recommending (CQ-003)', () => {
+  const ctx = makeCtx();
+  ctx.decision.action = 'recommend';
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('NEVER ask for contact information'), 'Expected CQ-003 recommendation structure rule');
+  assert.ok(result.systemPrompt.includes('RECOMMEND'), 'Expected RECOMMEND action in output rules header');
+});
+
+test('PROMPT-16: knownFacts present → memory section tells LLM to USE them and never re-ask (CQ-002)', () => {
+  const ctx = makeCtx();
+  ctx.memory.knownFacts = [{ field: 'age', value: '39' }, { field: 'budget', value: '20000' }];
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('CRITICAL: USE these facts'), 'Expected memory continuity instruction');
+  assert.ok(result.systemPrompt.includes('age'), 'Expected age in memory section');
+  assert.ok(result.systemPrompt.includes('budget'), 'Expected budget in memory section');
+});
+
+test('PROMPT-17: ROLE section includes advisor voice guidance (CQ-004)', () => {
+  const ctx    = makeCtx();
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('Advisor voice'), 'Expected advisor voice guidance in ROLE section');
+  assert.ok(result.systemPrompt.includes('จากข้อมูลที่คุณให้มาครับ'), 'Expected Thai advisor phrase example');
+});
+
+test('PROMPT-18: educate action → output rules include 4-part structure with คืออะไร (CQ-005)', () => {
+  const ctx = makeCtx();
+  ctx.decision.action = 'educate';
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('คืออะไร'), 'Expected product explanation structure rule');
+  assert.ok(result.systemPrompt.includes('เหมาะกับใคร'), 'Expected who-benefits rule');
+});
+
+test('PROMPT-19: output rules include memory check rule (CQ-002) and conversation flow rule (CQ-006)', () => {
+  const ctx    = makeCtx();
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('Memory continuity'), 'Expected memory continuity rule');
+  assert.ok(result.systemPrompt.includes('Conversation flow'), 'Expected conversation flow rule');
+});
+
 test('PROMPT-14: sectionCount is 11', () => {
   const ctx    = makeCtx();
   const result = buildPrompt({ executionContext: ctx });
