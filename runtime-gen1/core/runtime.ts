@@ -10,8 +10,9 @@ import { buildExecutionContext } from '../context/contextBuilder';
 import { buildPrompt } from '../response/promptBuilder';
 import { generateResponse, GEN1_SAFE_FALLBACK_TEXT } from '../response/llmAdapter';
 import { validateResponse } from '../response/responseValidator';
+import { formatResponse } from '../response/responseFormatter';
 
-export const RUNTIME_VERSION = 'gen1-stub-0.8.0';
+export const RUNTIME_VERSION = 'gen1-stub-0.9.0';
 
 const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่นใหม่กำลังทำงานครับ 😊';
 
@@ -134,6 +135,9 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
         executionContext: contextResult.executionContext,
       });
 
+      // Step 10: Response formatter (P0-001/P0-007) — Unicode, markdown, whitespace
+      const formatterResult = formatResponse({ text: responseResult.text });
+
       const gen1Trace: RuntimeTrace = {
         ...trace,
         // Step 7
@@ -151,10 +155,20 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
         responseValidationWarnings: responseResult.warnings,
         responseUsedFallback:       responseResult.usedFallback,
         responseWordCount:          responseResult.wordCount,
+        // Step 10 — formatter (P0-008 audit)
+        formatterApplied:  formatterResult.changed,
+        formatterRules:    formatterResult.appliedRules,
+        // P0-008 — conversation audit fields
+        strategyReason:              strategyResult.strategyGoal,
+        questionCount:               responseResult.questionCount,
+        educationDelivered:          memoryResult.leadMemory.valueDelivered,
+        leadCaptureStarted:          memoryResult.leadMemory.captureStage !== 'IDLE' && memoryResult.leadMemory.captureStage !== 'COMPLETE',
+        recommendationDelivered:     false,   // tracked via memory in a future phase
+        valueDeliveredBeforeCapture: decisionResult.shouldCollectLead ? memoryResult.leadMemory.valueDelivered : undefined,
       };
 
       return {
-        text:           responseResult.text,
+        text:           formatterResult.text,
         decision:       decisionResult.action,
         runtimeVersion: RUNTIME_VERSION,
         trace:          gen1Trace,

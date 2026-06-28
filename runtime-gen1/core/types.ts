@@ -116,12 +116,21 @@ export interface RuntimeTrace {
   // Phase Pre-10.9 additions — conversation strategy engine
   strategyId?: string;
   strategyGoal?: string;
+  strategyReason?: string;
   topicShiftDetected?: boolean;
   leadCaptureAllowedByStrategy?: boolean;
   strategyMustAnswerFirst?: boolean;
   strategyMustEducate?: boolean;
   strategyMustRecommendBeforeCapture?: boolean;
   strategyWarnings?: string[];
+  // Stabilization Sprint 1 — conversation audit fields (P0-008)
+  formatterApplied?: boolean;
+  formatterRules?: string[];
+  questionCount?: number;
+  educationDelivered?: boolean;
+  leadCaptureStarted?: boolean;
+  recommendationDelivered?: boolean;
+  valueDeliveredBeforeCapture?: boolean;
 }
 
 export interface RuntimeDecision {

@@ -19,6 +19,7 @@ export interface ResponseValidatorResult {
   warnings: string[];        // SOFT warnings
   usedFallback: boolean;
   wordCount: number;
+  questionCount: number;     // P0-008: questions detected (used for audit and CP-01 enforcement)
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -112,13 +113,14 @@ export function validateResponse(input: ResponseValidatorInput): ResponseValidat
   const failures: string[] = [];
   const warnings: string[] = [];
   const wordCount = approximateWordCount(text);
+  const qCount = countQuestions(text);
 
   // ── HARD-01: Empty response ────────────────────────────────────────────────
   if (!text || text.trim().length === 0) {
     failures.push('RESP-HARD-01: Generated response is empty');
     return {
       passed: false, text: RESPONSE_SAFE_FALLBACK_TEXT,
-      failures, warnings, usedFallback: true, wordCount: 0,
+      failures, warnings, usedFallback: true, wordCount: 0, questionCount: 0,
     };
   }
 
@@ -151,7 +153,7 @@ export function validateResponse(input: ResponseValidatorInput): ResponseValidat
   if (failures.length > 0) {
     return {
       passed: false, text: RESPONSE_SAFE_FALLBACK_TEXT,
-      failures, warnings, usedFallback: true, wordCount,
+      failures, warnings, usedFallback: true, wordCount, questionCount: 0,
     };
   }
 
@@ -164,7 +166,6 @@ export function validateResponse(input: ResponseValidatorInput): ResponseValidat
   }
 
   // ── SOFT-02: Too many questions ───────────────────────────────────────────
-  const qCount = countQuestions(text);
   if (ctx.responseProfile.questionStrategy === 'one_question' && qCount > 1) {
     warnings.push(
       `RESP-SOFT-02: question_strategy=one_question but ~${qCount} question patterns detected`,
@@ -202,7 +203,17 @@ export function validateResponse(input: ResponseValidatorInput): ResponseValidat
     }
   }
 
+  // ── SOFT-06: CP-01 Answer-first violation (P0-003) ────────────────────────
+  // If strategy requires mustAnswerFirst, the response must not open with a question.
+  if (ctx.conversationStrategy.mustAnswerFirst && qCount > 0) {
+    const firstLine = text.trim().split('\n')[0] ?? '';
+    const startsWithQuestion = QUESTION_MARKERS.some((m) => firstLine.includes(m));
+    if (startsWithQuestion) {
+      warnings.push('RESP-SOFT-06: CP-01 — response first line contains a question marker (mustAnswerFirst=true)');
+    }
+  }
+
   return {
-    passed: true, text, failures, warnings, usedFallback: false, wordCount,
+    passed: true, text, failures, warnings, usedFallback: false, wordCount, questionCount: qCount,
   };
 }

@@ -485,6 +485,13 @@ function buildRestrictions(input: ContextBuilderInput): ContextRestrictions {
     hardProhibitions.push('NEVER collect lead data while handling claim or hospital support');
   }
 
+  // P0-004: Topic shift cancels lead capture (CP-08)
+  if (input.strategyResult.topicShiftDetected) {
+    const topicShiftRule = 'TOPIC SHIFT ACTIVE — Do NOT collect any lead data this turn. Do NOT ask for name, phone, age, or budget. Respond only to the customer\'s new topic.';
+    active.push({ id: 'R-CP08-01', rule: topicShiftRule, severity: 'HARD', source: 'CP-08 Topic Shift Recovery' });
+    hardProhibitions.push(topicShiftRule);
+  }
+
   // Lead capture guard: one field only (VAL-B-07)
   if (decisionResult.shouldCollectLead && decisionResult.askField) {
     active.push({
@@ -528,12 +535,16 @@ function buildEscalation(input: ContextBuilderInput): ContextEscalation {
 // ─── Policy sections ──────────────────────────────────────────────────────────
 
 function buildLeadPolicy(input: ContextBuilderInput): ContextLeadPolicy {
-  const { memoryResult, decisionResult } = input;
+  const { memoryResult, decisionResult, strategyResult } = input;
   const { leadMemory, trustMemory, knownFields } = memoryResult;
 
+  // P0-004: Topic shift cancels lead capture for this turn (CP-08)
+  const topicShiftActive = strategyResult.topicShiftDetected;
+
   return {
-    captureAllowed: trustMemory.leadCaptureAllowed,
-    fieldBeingAsked: decisionResult.shouldCollectLead ? decisionResult.askField : null,
+    captureAllowed: topicShiftActive ? false : trustMemory.leadCaptureAllowed,
+    fieldBeingAsked: topicShiftActive ? null :
+      (decisionResult.shouldCollectLead ? decisionResult.askField : null),
     knownFields,
     valueDelivered: leadMemory.valueDelivered,
     captureStage: leadMemory.captureStage,

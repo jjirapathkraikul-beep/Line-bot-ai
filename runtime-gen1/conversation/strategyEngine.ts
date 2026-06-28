@@ -73,13 +73,20 @@ function selectStrategyId(
       // CP-03: if value not yet delivered, educate before capturing
       return valueDelivered ? 'ANSWER_FIRST_ONE_QUESTION' : 'EDUCATE_THEN_DISCOVER';
 
-    case 'collect_lead':
-      return 'ANSWER_FIRST_ONE_QUESTION';
+    case 'collect_lead': {
+      // P0-005: contact field capture (phone/name/time) must follow recommendation first (CP-07)
+      const CONTACT_FIELDS = ['phone', 'real_name', 'preferred_contact_time'];
+      const isContactCapture =
+        decisionResult.askField !== null &&
+        CONTACT_FIELDS.includes(decisionResult.askField);
+      if (isContactCapture) return 'RECOMMEND_THEN_CAPTURE';
+      // CP-03 defense: demographic capture only when value has been delivered
+      return valueDelivered ? 'ANSWER_FIRST_ONE_QUESTION' : 'EDUCATE_THEN_DISCOVER';
+    }
 
     case 'answer':
       return 'ANSWER_ONLY';
 
-    case 'handoff':
     case 'emergency_guide':
       return 'HANDOFF_WITH_CONTEXT';
 

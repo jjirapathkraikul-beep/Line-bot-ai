@@ -20,14 +20,16 @@ function makeIntent(
   flags: Partial<IntentDetectorResult['flags']> = {},
 ): IntentDetectorResult {
   return {
-    intent: intent as IntentDetectorResult['intent'],
-    confidence: 0.85,
+    intent:          intent as IntentDetectorResult['intent'],
+    confidence:      0.85,
+    matchedKeywords: [],
     flags: {
       isTrustSignal:          false,
       isMedicalSignal:        false,
       isEmergency:            false,
       isHumanRequest:         false,
       isProductIntent:        false,
+      isPriceIntent:          false,
       isRecommendationIntent: false,
       ...flags,
     },
@@ -37,11 +39,18 @@ function makeIntent(
 function makeCapability(): CapabilityLoaderResult {
   return {
     primaryCapability: {
-      capId: 'CAP-001', name: 'Greeting Handler',
-      acpPath: 'AIOS/ACP/ACP-01_GREETING', priority: 'STANDARD',
+      capId:                   'CAP-001',
+      name:                    'Greeting Handler',
+      acpPath:                 'AIOS/ACP/ACP-01_GREETING',
+      priority:                'STANDARD',
+      supportedIntents:        ['greeting'],
+      canInterruptLeadCapture: false,
+      requiresHumanEscalation: false,
+      description:             'stub',
     },
     secondaryCapabilities: [],
     selectedAcpPaths: ['AIOS/ACP/ACP-01_GREETING'],
+    priority: 'STANDARD',
     shouldInterruptCurrentState: false,
     reason: 'Greeting detected',
   };
@@ -90,9 +99,14 @@ function makeMemory(overrides: {
     missingFields: [],
     deferredFields: [],
     neverAskAgainFields: [],
+    shouldAskField: false,
     nextBestFieldToAsk: null,
     extractedFacts: [],
     memoryDecisionReason: 'stub',
+    memoryTrace: {
+      fieldsFromSession: [], fieldsFromMessage: [], fieldsBlocked: [],
+      leadCaptureAllowed: true, trustActive: false, medicalActive: false,
+    },
   };
 }
 
@@ -309,4 +323,42 @@ test('PROP-04: getStrategy returns definition matching the requested ID', () => 
   assert.equal(def.id, 'BUILD_TRUST_FIRST');
   assert.equal(def.leadCaptureAllowed, false);
   assert.ok(def.patterns.includes('CP-04'));
+});
+
+// ─── P0-005: Recommendation before lead capture ───────────────────────────────
+
+test('P005-01: collect_lead + askField=phone → RECOMMEND_THEN_CAPTURE (CP-07)', () => {
+  const result = selectConversationStrategy(
+    makeInput('product_inquiry', {}, { valueDelivered: true }, 'collect_lead', { askField: 'phone', shouldCollectLead: true }),
+  );
+  assert.equal(result.strategyId, 'RECOMMEND_THEN_CAPTURE');
+  assert.equal(result.mustRecommendBeforeCapture, true);
+});
+
+test('P005-02: collect_lead + askField=real_name → RECOMMEND_THEN_CAPTURE (CP-07)', () => {
+  const result = selectConversationStrategy(
+    makeInput('product_inquiry', {}, { valueDelivered: true }, 'collect_lead', { askField: 'real_name', shouldCollectLead: true }),
+  );
+  assert.equal(result.strategyId, 'RECOMMEND_THEN_CAPTURE');
+});
+
+test('P005-03: collect_lead + askField=preferred_contact_time → RECOMMEND_THEN_CAPTURE (CP-07)', () => {
+  const result = selectConversationStrategy(
+    makeInput('product_inquiry', {}, { valueDelivered: true }, 'collect_lead', { askField: 'preferred_contact_time', shouldCollectLead: true }),
+  );
+  assert.equal(result.strategyId, 'RECOMMEND_THEN_CAPTURE');
+});
+
+test('P005-04: collect_lead + askField=age (demographic) + valueDelivered → ANSWER_FIRST_ONE_QUESTION', () => {
+  const result = selectConversationStrategy(
+    makeInput('product_inquiry', {}, { valueDelivered: true }, 'collect_lead', { askField: 'age', shouldCollectLead: true }),
+  );
+  assert.equal(result.strategyId, 'ANSWER_FIRST_ONE_QUESTION');
+});
+
+test('P005-05: collect_lead + askField=age + valueDelivered=false → EDUCATE_THEN_DISCOVER (CP-03)', () => {
+  const result = selectConversationStrategy(
+    makeInput('product_inquiry', {}, { valueDelivered: false }, 'collect_lead', { askField: 'age', shouldCollectLead: true }),
+  );
+  assert.equal(result.strategyId, 'EDUCATE_THEN_DISCOVER');
 });

@@ -313,12 +313,16 @@ function buildStrategy(ctx: ExecutionContext): string {
 function buildOutputRules(ctx: ExecutionContext): string {
   const action  = ctx.decision.action as string;
   const specific = ACTION_OUTPUT_RULES[action] ?? ACTION_OUTPUT_RULES['fallback']!;
+  const s = ctx.conversationStrategy;
   const lines   = ['=== 12: OUTPUT RULES ==='];
 
   // Universal rules (always present)
   lines.push('Universal rules (always apply):');
   lines.push('  1. Respond in Thai ONLY — ภาษาไทยเท่านั้น');
-  if (ctx.responseProfile.answerFirst) {
+  if (s.mustAnswerFirst) {
+    // P0-003: stronger CP-01 enforcement when strategy mandates it
+    lines.push('  2. [MANDATORY CP-01] Your FIRST SENTENCE must directly answer the customer\'s question. Never start with a greeting, question, or preamble.');
+  } else if (ctx.responseProfile.answerFirst) {
     lines.push('  2. Answer the customer\'s question FIRST before any follow-up (CP-01)');
   } else {
     lines.push('  2. Lead with empathy/guidance — action type does not require answer-first');
@@ -338,8 +342,24 @@ function buildOutputRules(ctx: ExecutionContext): string {
   lines.push('  5. Never open with filler phrases: "ขอบคุณสำหรับคำถาม", "ยินดีที่จะช่วย", "นั่นเป็นคำถามที่น่าสนใจ"');
   lines.push('  6. Keep paragraph length to 2–3 sentences maximum; use bullet lists for multiple items');
 
+  // P0-002: strategy-driven execution order (strategy is single source of truth — overrides action-specific rules below)
   lines.push('');
-  lines.push(`Action-specific rules for ${action.toUpperCase()}:`);
+  lines.push(`Strategy execution order (from Section 11 — follow this, not just the action):`);
+  s.orderedSteps.forEach((step, i) => lines.push(`  STEP ${i + 1}: ${step}`));
+
+  // Strategy guards surfaced as explicit prohibitions
+  if (s.mustRecommendBeforeCapture) {
+    lines.push('  ⚠️  [CP-07 MANDATORY] Present a personalized recommendation BEFORE asking for any contact information.');
+  }
+  if (s.mustEducate) {
+    lines.push('  ⚠️  [CP-03 MANDATORY] Educate about the insurance concept BEFORE capturing any customer data.');
+  }
+  if (s.topicShiftDetected) {
+    lines.push('  ⚠️  [CP-08 MANDATORY] Topic shift detected — abandon previous lead capture flow entirely. Respond to the customer\'s new topic only.');
+  }
+
+  lines.push('');
+  lines.push(`Action-specific rules for ${action.toUpperCase()} (secondary — strategy steps above take precedence):`);
   specific.forEach((r, i) => lines.push(`  ${i + 1}. ${r}`));
 
   return lines.join('\n');
