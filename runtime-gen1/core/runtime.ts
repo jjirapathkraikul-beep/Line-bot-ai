@@ -166,8 +166,8 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
       error:                   null,
       responseLength:          formatterResult.text.length,
     };
-    logConversationTurn(successEntry);
-    enqueueAudit(successEntry);
+    await logConversationTurn(successEntry);
+    await enqueueAudit(successEntry);
     recordMetric(successEntry);
 
     return {
@@ -245,8 +245,8 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
       error:                   errMsg,
       responseLength:          GEN1_SAFE_FALLBACK_TEXT.length,
     };
-    logConversationTurn(failureEntry);
-    enqueueAudit(failureEntry);
+    await logConversationTurn(failureEntry);
+    await enqueueAudit(failureEntry);
     recordMetric(failureEntry);
 
     return {

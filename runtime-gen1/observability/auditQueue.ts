@@ -1,29 +1,33 @@
-// Conversation Audit Queue — Beta Release Sprint
-// Every completed Gen1 turn is enqueued as an audit candidate (status: PENDING).
-// Manual review only — no automatic AI auditing in beta.
-// Persistence: Vercel log stream (in-memory for within-process access).
+// Conversation Audit Queue — Beta Release + KV Persistence Hotfix
+// In-memory queue (sync) + Vercel KV persistence (async, best-effort).
+// KV failures are silently swallowed — customers are never affected.
 
+import { getKvClient } from './kvClient';
 import type { ConversationLogEntry } from './conversationLogger';
+
+export const AUDIT_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
 export type AuditStatus = 'PENDING' | 'REVIEWED' | 'FIXED' | 'VERIFIED';
 
 export interface AuditCandidate {
-  conversationId: string;
-  sessionId:      string;
-  timestamp:      string;
-  intent:         string;
-  decision:       string;
-  strategy:       string;
-  fallbackUsed:   boolean;
+  conversationId:  string;
+  sessionId:       string;
+  timestamp:       string;
+  intent:          string;
+  decision:        string;
+  strategy:        string;
+  fallbackUsed:    boolean;
   validatorPassed: boolean;
-  questionCount:  number;
-  latency:        number;
-  status:         AuditStatus;
+  questionCount:   number;
+  latency:         number;
+  status:          AuditStatus;
 }
 
 const _queue: AuditCandidate[] = [];
 
-export function enqueueAudit(entry: ConversationLogEntry): AuditCandidate {
+// In-memory push is sync (before any await) so existing tests that don't
+// await this function still see the queue update immediately.
+export async function enqueueAudit(entry: ConversationLogEntry): Promise<AuditCandidate> {
   const candidate: AuditCandidate = {
     conversationId:  entry.conversationId,
     sessionId:       entry.sessionId,
@@ -37,7 +41,7 @@ export function enqueueAudit(entry: ConversationLogEntry): AuditCandidate {
     latency:         entry.latency,
     status:          'PENDING',
   };
-  _queue.push(candidate);
+  _queue.push(candidate); // sync — callers that don't await still see this
   console.log('[AUDIT_ENQUEUE]', JSON.stringify({
     conversationId: candidate.conversationId,
     sessionId:      candidate.sessionId,
@@ -45,6 +49,16 @@ export function enqueueAudit(entry: ConversationLogEntry): AuditCandidate {
     fallbackUsed:   candidate.fallbackUsed,
     latency:        candidate.latency,
   }));
+
+  try {
+    const kv = getKvClient();
+    await kv.set(`audit:byId:${candidate.sessionId}`, JSON.stringify(candidate), { ex: AUDIT_TTL_SECONDS });
+    await kv.lpush('audit:status:PENDING', candidate.sessionId);
+    await kv.expire('audit:status:PENDING', AUDIT_TTL_SECONDS);
+  } catch (err) {
+    console.error('[AUDIT_PERSIST_ERROR]', String(err));
+  }
+
   return candidate;
 }
 
@@ -62,4 +76,34 @@ export function updateAuditStatus(conversationId: string, status: AuditStatus): 
 
 export function clearAuditQueue(): void {
   _queue.length = 0;
+}
+
+// ─── Read helpers ─────────────────────────────────────────────────────────────
+// Used by audit workflows and AI agents for review (auditId = sessionId).
+
+export async function getAuditById(auditId: string): Promise<AuditCandidate | null> {
+  try {
+    const raw = await getKvClient().get(`audit:byId:${auditId}`);
+    return raw ? (JSON.parse(raw) as AuditCandidate) : null;
+  } catch (err) {
+    console.error('[AUDIT_READ_ERROR]', String(err));
+    return null;
+  }
+}
+
+export async function getPendingAuditCandidates(limit: number): Promise<AuditCandidate[]> {
+  try {
+    const kv         = getKvClient();
+    const sessionIds = await kv.lrange('audit:status:PENDING', 0, limit - 1);
+    const candidates = await Promise.all(
+      sessionIds.map(async (id) => {
+        const raw = await kv.get(`audit:byId:${id}`);
+        return raw ? (JSON.parse(raw) as AuditCandidate) : null;
+      }),
+    );
+    return candidates.filter((c): c is AuditCandidate => c !== null);
+  } catch (err) {
+    console.error('[AUDIT_READ_ERROR]', String(err));
+    return [];
+  }
 }
