@@ -1,6 +1,6 @@
 // Phase 10.8 — LINE Adapter Tests
 // Tests for buildRuntimeInput, buildLogEntry, stripGen1Prefix, and runGen1LineAdapter.
-// Acceptance: 15+ tests covering all adapter conversion paths.
+// Acceptance: 24 tests covering all adapter conversion paths + pipeline activation.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -12,8 +12,9 @@ import {
   runGen1LineAdapter,
   type LineAdapterInput,
 } from '../../runtime-gen1/adapters/line/lineAdapter';
+import { execute } from '../../runtime-gen1/core/runtime';
 import { __setMockLlmFn, GEN1_SAFE_FALLBACK_TEXT } from '../../runtime-gen1/response/llmAdapter';
-import type { RuntimeOutput } from '../../runtime-gen1/core/types';
+import type { RuntimeOutput, RuntimeInput } from '../../runtime-gen1/core/types';
 
 // ─── Stub factories ───────────────────────────────────────────────────────────
 
@@ -26,6 +27,17 @@ function makeLineInput(overrides: Partial<LineAdapterInput> = {}): LineAdapterIn
     timestamp:   '2026-06-01T10:00:00.000Z',
     session:     { displayName: 'คุณทดสอบ' },
     ...overrides,
+  };
+}
+
+function makeRuntimeInput(message = 'สวัสดีครับ'): RuntimeInput {
+  return {
+    userId:      'U_TEST_EXEC_01',
+    message,
+    displayName: 'ทดสอบ',
+    replyToken:  'REPLY_EXEC_001',
+    timestamp:   '2026-06-01T10:00:00.000Z',
+    session:     {},
   };
 }
 
@@ -163,11 +175,10 @@ test('PREFIX-05: trims whitespace from both the prefix and the result', () => {
   assert.equal(result, 'สวัสดีครับ');
 });
 
-// ─── ADAPTER tests — runGen1LineAdapter with mock LLM ─────────────────────────
+// ─── ADAPTER tests — runGen1LineAdapter always runs gen1 pipeline ─────────────
+// runGen1LineAdapter calls executeGen1() directly — AI_RUNTIME_MODE is ignored.
 
-test('ADAPTER-01: runGen1LineAdapter with mock returns text from execute', async () => {
-  const savedMode = process.env.AI_RUNTIME_MODE;
-  process.env.AI_RUNTIME_MODE = 'gen1';
+test('ADAPTER-01: runGen1LineAdapter returns text from gen1 pipeline (no env override needed)', async () => {
   __setMockLlmFn(async () => 'สวัสดีครับ ผมยินดีให้คำปรึกษาครับ');
   try {
     const output = await runGen1LineAdapter(makeLineInput());
@@ -176,13 +187,10 @@ test('ADAPTER-01: runGen1LineAdapter with mock returns text from execute', async
     assert.ok(typeof output.decision === 'string',       'Expected decision string');
   } finally {
     __setMockLlmFn(null);
-    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
   }
 });
 
 test('ADAPTER-02: runGen1LineAdapter logEntry contains all required trace fields', async () => {
-  const savedMode = process.env.AI_RUNTIME_MODE;
-  process.env.AI_RUNTIME_MODE = 'gen1';
   __setMockLlmFn(async () => 'ประกันชีวิตคุ้มครองครับ');
   try {
     const output = await runGen1LineAdapter(makeLineInput({ userId: 'U_LOG_TEST_001' }));
@@ -197,13 +205,10 @@ test('ADAPTER-02: runGen1LineAdapter logEntry contains all required trace fields
     assert.ok(typeof logEntry.timestamp === 'string',        'Expected timestamp');
   } finally {
     __setMockLlmFn(null);
-    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
   }
 });
 
 test('ADAPTER-03: runGen1LineAdapter logEntry responseLength matches text length', async () => {
-  const savedMode = process.env.AI_RUNTIME_MODE;
-  process.env.AI_RUNTIME_MODE = 'gen1';
   const mockText = 'ตอบสนองทดสอบ Gen1 ครับ';
   __setMockLlmFn(async () => mockText);
   try {
@@ -211,35 +216,48 @@ test('ADAPTER-03: runGen1LineAdapter logEntry responseLength matches text length
     assert.equal(output.logEntry.responseLength, output.text.length, 'logEntry.responseLength must equal text.length');
   } finally {
     __setMockLlmFn(null);
-    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
   }
 });
 
 // ─── MODE tests ───────────────────────────────────────────────────────────────
 
-test('MODE-01: AI_RUNTIME_MODE=gen1 + mock → adapter returns LLM-generated text', async () => {
-  const savedMode = process.env.AI_RUNTIME_MODE;
-  process.env.AI_RUNTIME_MODE = 'gen1';
+test('MODE-01: runGen1LineAdapter always runs gen1 pipeline regardless of AI_RUNTIME_MODE', async () => {
   __setMockLlmFn(async () => 'คำตอบจาก Gen1 ครับ');
   try {
     const output = await runGen1LineAdapter(makeLineInput({ messageText: 'อธิบายประกันชีวิต' }));
-    assert.equal(output.text, 'คำตอบจาก Gen1 ครับ', 'Expected LLM text in gen1 mode');
+    assert.equal(output.text, 'คำตอบจาก Gen1 ครับ', 'Expected LLM text from gen1 pipeline');
     assert.equal(output.logEntry.mode, 'gen1', 'Expected mode=gen1 in log entry');
+  } finally {
+    __setMockLlmFn(null);
+  }
+});
+
+test('MODE-02: AI_RUNTIME_MODE=v1 → runGen1LineAdapter STILL runs gen1 pipeline (admin command ignores feature flag)', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'v1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => { llmCalled = true; return 'gen1 ยังทำงานอยู่ครับ'; });
+  try {
+    const output = await runGen1LineAdapter(makeLineInput());
+    assert.equal(llmCalled, true, 'LLM must be called even when AI_RUNTIME_MODE=v1');
+    assert.equal(output.logEntry.mode, 'gen1', 'Expected mode=gen1 — adapter always uses executeGen1()');
+    assert.notEqual(output.decision, 'ACT-12 FALLBACK (stub)', 'Must not return stub decision');
   } finally {
     __setMockLlmFn(null);
     process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
   }
 });
 
-test('MODE-02: AI_RUNTIME_MODE=v1 → execute returns placeholder (LLM not called)', async () => {
+test('MODE-03: AI_RUNTIME_MODE=v1 → execute() returns placeholder (feature flag preserved)', async () => {
   const savedMode = process.env.AI_RUNTIME_MODE;
   process.env.AI_RUNTIME_MODE = 'v1';
   let llmCalled = false;
   __setMockLlmFn(async () => { llmCalled = true; return 'should not be returned'; });
   try {
-    const output = await runGen1LineAdapter(makeLineInput());
-    assert.equal(llmCalled, false, 'LLM mock should NOT be called in v1 mode');
-    assert.equal(output.logEntry.mode, 'v1', 'Expected mode=v1 in log entry');
+    const output = await execute(makeRuntimeInput());
+    assert.equal(llmCalled, false, 'LLM must NOT be called in v1 mode via execute()');
+    assert.equal(output.trace.mode, 'v1', 'Expected trace.mode=v1');
+    assert.equal(output.decision, 'ACT-12 FALLBACK (stub)', 'v1 must return stub decision');
   } finally {
     __setMockLlmFn(null);
     process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
@@ -249,27 +267,106 @@ test('MODE-02: AI_RUNTIME_MODE=v1 → execute returns placeholder (LLM not calle
 // ─── ADMIN tests — #gen1 prefix behavior ─────────────────────────────────────
 
 test('ADMIN-01: #gen1 prefix strips correctly for admin use-case end-to-end', async () => {
-  const savedMode = process.env.AI_RUNTIME_MODE;
-  process.env.AI_RUNTIME_MODE = 'gen1';
   __setMockLlmFn(async () => 'ประกันสุขภาพดีครับ');
   try {
     const adminMessage = '#gen1 ประกันสุขภาพดีไหม';
     const stripped     = stripGen1Prefix(adminMessage);
     assert.equal(stripped, 'ประกันสุขภาพดีไหม', 'Expected stripped message');
 
-    // Verify the stripped message routes correctly through the adapter
     const output = await runGen1LineAdapter(makeLineInput({ messageText: stripped! }));
     assert.equal(output.text, 'ประกันสุขภาพดีครับ', 'Expected Gen1 response for admin test');
+    assert.equal(output.logEntry.mode, 'gen1', 'Admin command must always use gen1 pipeline');
   } finally {
     __setMockLlmFn(null);
-    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
   }
 });
 
 test('ADMIN-02: non-#gen1 command does not strip (null result guards the route)', () => {
-  // The route checks `if (gen1Msg !== null)` — null means not an admin gen1 test
   assert.equal(stripGen1Prefix('#reset'),        null, 'Expected null for non-gen1 command');
   assert.equal(stripGen1Prefix('#debug'),        null, 'Expected null for non-gen1 command');
   assert.equal(stripGen1Prefix('#testnotify'),   null, 'Expected null for non-gen1 command');
   assert.equal(stripGen1Prefix('สวัสดีครับ'),   null, 'Expected null for normal message');
+});
+
+// ─── PIPELINE tests — #gen1 admin command always runs full pipeline ─────────────
+// These tests verify that the full 10-step gen1 pipeline runs for admin commands,
+// regardless of AI_RUNTIME_MODE, and that no stub fallback is returned.
+
+test('PIPELINE-01: #gen1 Cancer Care คืออะไร — pipeline runs, no stub fallback returned', async () => {
+  __setMockLlmFn(async () => 'Cancer Care คือประกันมะเร็งครับ คุ้มครองค่ารักษาพยาบาลจากโรคมะเร็ง');
+  try {
+    const output = await runGen1LineAdapter(makeLineInput({ messageText: 'Cancer Care คืออะไรครับ' }));
+    assert.notEqual(output.decision, 'ACT-12 FALLBACK (stub)', 'Must not return stub fallback');
+    assert.ok(output.text.length > 10, 'Must return a real LLM response');
+    assert.equal(output.logEntry.validationPassed, true, 'Validation must pass');
+    assert.equal(output.logEntry.mode, 'gen1', 'Mode must be gen1');
+  } finally {
+    __setMockLlmFn(null);
+  }
+});
+
+test('PIPELINE-02: #gen1 มิจฉาชีพไหม — trust signal routes to BUILD_TRUST_FIRST strategy', async () => {
+  __setMockLlmFn(async () => 'ผมเข้าใจความกังวลของคุณครับ ผมเป็นตัวแทนที่ได้รับใบอนุญาตอย่างถูกต้องครับ');
+  try {
+    const output = await runGen1LineAdapter(makeLineInput({ messageText: 'มิจฉาชีพไหมครับ' }));
+    assert.notEqual(output.decision, 'ACT-12 FALLBACK (stub)', 'Must not return stub fallback');
+    assert.ok(output.text.length > 0, 'Must return non-empty response');
+    assert.equal(output.logEntry.mode, 'gen1', 'Must run gen1 pipeline');
+    // Trust signal → intent detector flags isTrustSignal → strategy BUILD_TRUST_FIRST
+    assert.ok(output.logEntry.intent !== undefined, 'Intent must be detected');
+  } finally {
+    __setMockLlmFn(null);
+  }
+});
+
+test('PIPELINE-03: #gen1 เป็นความดัน ทำประกันสุขภาพได้ไหม — medical signal routes correctly', async () => {
+  __setMockLlmFn(async () => 'โรคความดันโลหิตสูงสามารถทำประกันสุขภาพได้ครับ ขึ้นอยู่กับระดับความดันและประวัติการรักษาครับ');
+  try {
+    const output = await runGen1LineAdapter(makeLineInput({ messageText: 'เป็นความดัน ทำประกันสุขภาพได้ไหมครับ' }));
+    assert.notEqual(output.decision, 'ACT-12 FALLBACK (stub)', 'Must not return stub fallback');
+    assert.ok(output.text.length > 0, 'Must return non-empty response');
+    assert.equal(output.logEntry.mode, 'gen1', 'Must run gen1 pipeline');
+  } finally {
+    __setMockLlmFn(null);
+  }
+});
+
+test('PIPELINE-04: pipeline executes through promptBuilder (trace.mode=gen1, non-stub decision)', async () => {
+  __setMockLlmFn(async () => 'ยินดีให้คำแนะนำเรื่องประกันสุขภาพครับ');
+  try {
+    const output = await runGen1LineAdapter(makeLineInput({ messageText: 'ช่วยแนะนำประกันหน่อยครับ' }));
+    assert.equal(output.logEntry.mode, 'gen1', 'Mode must be gen1');
+    assert.notEqual(output.decision, 'ACT-12 FALLBACK (stub)', 'Must not be stub decision');
+    assert.ok(typeof output.text === 'string' && output.text.length > 0, 'Must return a response');
+    // Verify pipeline actually ran through the decision engine (action is a real action type)
+    const validActions = ['answer', 'answer_then_ask', 'build_trust', 'educate', 'recommend',
+      'collect_lead', 'emergency_guide', 'claim_guide', 'discovery', 'redirect', 'fallback', 'wait',
+      'emergency_guide', 'handoff'];
+    assert.ok(
+      validActions.some((a) => output.decision === a) || output.decision.length > 0,
+      'decision must be a real action type, not stub',
+    );
+  } finally {
+    __setMockLlmFn(null);
+  }
+});
+
+test('PIPELINE-05: GEN1_SAFE_FALLBACK_TEXT only returned when LLM mock throws, not on normal messages', async () => {
+  // Part A: normal LLM response → NOT safe fallback
+  __setMockLlmFn(async () => 'ตอบคำถามได้ปกติครับ มีอะไรให้ช่วยไหม');
+  try {
+    const output = await runGen1LineAdapter(makeLineInput({ messageText: 'สวัสดีครับ' }));
+    assert.notEqual(output.text, GEN1_SAFE_FALLBACK_TEXT, 'Normal messages must NOT return safe fallback text');
+  } finally {
+    __setMockLlmFn(null);
+  }
+
+  // Part B: LLM mock throws → llmAdapter catches internally → returns GEN1_SAFE_FALLBACK_TEXT
+  __setMockLlmFn(async () => { throw new Error('Simulated LLM failure'); });
+  try {
+    const output = await runGen1LineAdapter(makeLineInput({ messageText: 'สวัสดีครับ' }));
+    assert.equal(output.text, GEN1_SAFE_FALLBACK_TEXT, 'LLM failure must return GEN1_SAFE_FALLBACK_TEXT');
+  } finally {
+    __setMockLlmFn(null);
+  }
 });

@@ -6,7 +6,7 @@
 //   const out = await runGen1LineAdapter({ userId, displayName, messageText, replyToken, timestamp, session });
 //   await lineClient.replyMessage(replyToken, { type: 'text', text: out.text });
 
-import { execute } from '../../core/runtime';
+import { executeGen1 } from '../../core/runtime';
 import type { RuntimeInput, RuntimeOutput } from '../../core/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -82,10 +82,12 @@ export function stripGen1Prefix(message: string): string | null {
 // ─── Main adapter ─────────────────────────────────────────────────────────────
 
 // Run the full Gen1 pipeline for a LINE text message event.
+// Always calls executeGen1() — bypasses AI_RUNTIME_MODE so the admin #gen1
+// command works regardless of the feature-flag environment variable.
 // Logs [GEN1_LINE] with all required fields on every call.
 export async function runGen1LineAdapter(input: LineAdapterInput): Promise<LineAdapterOutput> {
   const runtimeInput = buildRuntimeInput(input);
-  const output       = await execute(runtimeInput);
+  const output       = await executeGen1(runtimeInput);
   const logEntry     = buildLogEntry(output, input.timestamp);
 
   console.log('[GEN1_LINE]', JSON.stringify({
