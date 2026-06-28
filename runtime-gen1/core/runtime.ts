@@ -11,6 +11,10 @@ import { buildPrompt } from '../response/promptBuilder';
 import { generateResponse, GEN1_SAFE_FALLBACK_TEXT } from '../response/llmAdapter';
 import { validateResponse } from '../response/responseValidator';
 import { formatResponse } from '../response/responseFormatter';
+import { buildConversationId, logConversationTurn } from '../observability/conversationLogger';
+import { enqueueAudit } from '../observability/auditQueue';
+import { recordMetric } from '../observability/runtimeMetrics';
+import type { ConversationLogEntry } from '../observability/conversationLogger';
 
 export const RUNTIME_VERSION = 'gen1-stub-0.9.0';
 
@@ -24,6 +28,8 @@ const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่น
 // only when the pipeline itself throws (not when LLM degrades gracefully).
 
 export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
+  const startTime = Date.now();
+
   // ── Steps 1–6: Intent → Capability → Memory → Knowledge → Decision → Strategy → Context ──
   const intentResult     = detectIntent(input.message);
   const capabilityResult = loadCapability(intentResult);
@@ -132,6 +138,38 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
       formatterApplied: formatterResult.changed,
     }));
 
+    const successEntry: ConversationLogEntry = {
+      conversationId:          buildConversationId(input.userId, input.timestamp),
+      sessionId:               contextResult.contextTrace.auditId,
+      timestamp:               input.timestamp,
+      runtimeVersion:          RUNTIME_VERSION,
+      runtimeMode:             'gen1',
+      userId:                  `${input.userId.substring(0, 8)}***`,
+      userMessage:             input.message.substring(0, 60),
+      assistantResponse:       formatterResult.text.substring(0, 150),
+      latency:                 Date.now() - startTime,
+      intent:                  intentResult.intent,
+      capability:              capabilityResult.primaryCapability.capId,
+      decision:                decisionResult.action,
+      strategy:                strategyResult.strategyId,
+      questionCount:           responseResult.questionCount ?? 0,
+      recommendationDelivered: decisionResult.action === 'recommend',
+      educationDelivered:      memoryResult.leadMemory.valueDelivered,
+      leadCaptureStarted:      memoryResult.leadMemory.captureStage !== 'IDLE' && memoryResult.leadMemory.captureStage !== 'COMPLETE',
+      leadCaptureCompleted:    memoryResult.leadMemory.captureStage === 'COMPLETE',
+      trustFlow:               intentResult.flags.isTrustSignal,
+      medicalFlow:             intentResult.flags.isMedicalSignal,
+      formatterApplied:        formatterResult.changed,
+      validatorPassed:         responseResult.passed,
+      fallbackUsed:            false,
+      fallbackReason:          null,
+      error:                   null,
+      responseLength:          formatterResult.text.length,
+    };
+    logConversationTurn(successEntry);
+    enqueueAudit(successEntry);
+    recordMetric(successEntry);
+
     return {
       text:           formatterResult.text,
       decision:       decisionResult.action,
@@ -178,6 +216,39 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
       formatterApplied: false,
       fallbackReason:   errMsg,
     }));
+
+    const failureEntry: ConversationLogEntry = {
+      conversationId:          buildConversationId(input.userId, input.timestamp),
+      sessionId:               contextResult.contextTrace.auditId,
+      timestamp:               input.timestamp,
+      runtimeVersion:          RUNTIME_VERSION,
+      runtimeMode:             'gen1',
+      userId:                  `${input.userId.substring(0, 8)}***`,
+      userMessage:             input.message.substring(0, 60),
+      assistantResponse:       GEN1_SAFE_FALLBACK_TEXT.substring(0, 150),
+      latency:                 Date.now() - startTime,
+      intent:                  intentResult.intent,
+      capability:              capabilityResult.primaryCapability.capId,
+      decision:                'fallback',
+      strategy:                strategyResult.strategyId,
+      questionCount:           0,
+      recommendationDelivered: false,
+      educationDelivered:      false,
+      leadCaptureStarted:      false,
+      leadCaptureCompleted:    false,
+      trustFlow:               intentResult.flags.isTrustSignal,
+      medicalFlow:             intentResult.flags.isMedicalSignal,
+      formatterApplied:        false,
+      validatorPassed:         false,
+      fallbackUsed:            true,
+      fallbackReason:          errMsg,
+      error:                   errMsg,
+      responseLength:          GEN1_SAFE_FALLBACK_TEXT.length,
+    };
+    logConversationTurn(failureEntry);
+    enqueueAudit(failureEntry);
+    recordMetric(failureEntry);
+
     return {
       text:           GEN1_SAFE_FALLBACK_TEXT,
       decision:       'fallback',
