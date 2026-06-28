@@ -5,8 +5,9 @@ import { loadCapability } from '../capability/capabilityLoader';
 import { resolveMemory } from '../memory/memoryResolver';
 import { resolveKnowledge } from '../knowledge/knowledgeResolver';
 import { makeDecision } from '../decision/decisionEngine';
+import { buildExecutionContext } from '../context/contextBuilder';
 
-export const RUNTIME_VERSION = 'gen1-stub-0.5.0';
+export const RUNTIME_VERSION = 'gen1-stub-0.6.0';
 
 const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่นใหม่กำลังทำงานครับ 😊';
 
@@ -25,6 +26,9 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
 
   // Step 5: Decision engine
   const decisionResult = makeDecision({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult });
+
+  // Step 6: Context builder
+  const contextResult = buildExecutionContext({ runtimeInput: input, intentResult, capabilityResult, memoryResult, knowledgeResult, decisionResult });
 
   const trace: RuntimeTrace = {
     mode:            getRuntimeMode(),
@@ -77,6 +81,20 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
     blockedCapabilities:       decisionResult.blockedCapabilities,
     decisionConfidence:        decisionResult.decisionTrace.confidence,
     alternativeAction:         decisionResult.decisionTrace.alternativeAction,
+    // Phase 10.6 — context builder
+    contextBuilt:              true,
+    contextValidationPassed:   contextResult.validation.passed,
+    contextWarnings:           contextResult.warnings,
+    responseProfileTone:       contextResult.executionContext.responseProfile.tone,
+    responseProfileLength:     contextResult.executionContext.responseProfile.length,
+    responseProfileEmpathy:    contextResult.executionContext.responseProfile.empathyLevel,
+    responseProfileQuestionStrategy: contextResult.executionContext.responseProfile.questionStrategy,
+    responseProfileCtaAllowed: contextResult.executionContext.responseProfile.ctaAllowed,
+    restrictionsHardCount:     contextResult.executionContext.restrictions.hardProhibitions.length,
+    restrictionsSoftCount:     contextResult.executionContext.restrictions.softProhibitions.length,
+    compressedContextCharCount: contextResult.contextTrace.compressedCharCount,
+    contextAuditId:            contextResult.contextTrace.auditId,
+    contextAssemblyTimeMs:     contextResult.contextTrace.assemblyTimeMs,
   };
 
   return {

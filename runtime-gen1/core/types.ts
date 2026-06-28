@@ -70,6 +70,20 @@ export interface RuntimeTrace {
   knowledgeDecisionReason?: string;
   mandatoryKnowledgeIncluded?: boolean;
   knowledgeFragmentsAdded?: string[];
+  // Phase 10.6 additions — context builder
+  contextBuilt?: boolean;
+  contextValidationPassed?: boolean;
+  contextWarnings?: string[];
+  responseProfileTone?: string;
+  responseProfileLength?: string;
+  responseProfileEmpathy?: string;
+  responseProfileQuestionStrategy?: string;
+  responseProfileCtaAllowed?: boolean;
+  restrictionsHardCount?: number;
+  restrictionsSoftCount?: number;
+  compressedContextCharCount?: number;
+  contextAuditId?: string;
+  contextAssemblyTimeMs?: number;
   // Phase 10.5 additions — decision engine
   action?: string;
   decisionPriority?: string;
