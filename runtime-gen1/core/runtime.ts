@@ -6,8 +6,11 @@ import { resolveMemory } from '../memory/memoryResolver';
 import { resolveKnowledge } from '../knowledge/knowledgeResolver';
 import { makeDecision } from '../decision/decisionEngine';
 import { buildExecutionContext } from '../context/contextBuilder';
+import { buildPrompt } from '../response/promptBuilder';
+import { generateResponse, GEN1_SAFE_FALLBACK_TEXT } from '../response/llmAdapter';
+import { validateResponse } from '../response/responseValidator';
 
-export const RUNTIME_VERSION = 'gen1-stub-0.6.0';
+export const RUNTIME_VERSION = 'gen1-stub-0.7.0';
 
 const PLACEHOLDER_TEXT = 'ตอนนี้ระบบ AI Advisor รุ่นใหม่กำลังทำงานครับ 😊';
 
@@ -97,6 +100,86 @@ export async function execute(input: RuntimeInput): Promise<RuntimeOutput> {
     contextAssemblyTimeMs:     contextResult.contextTrace.assemblyTimeMs,
   };
 
+  const mode = getRuntimeMode();
+
+  // ── Gen1 mode: run full pipeline, return LLM-generated response ────────────
+  if (mode === 'gen1') {
+    try {
+      // Step 7: Prompt builder
+      const promptResult = buildPrompt({ executionContext: contextResult.executionContext });
+
+      // Step 8: LLM adapter
+      const llmResult = await generateResponse({
+        systemPrompt: promptResult.systemPrompt,
+        userMessage:  promptResult.userMessage,
+        userId:       input.userId,
+      });
+
+      // Step 9: Response validator
+      const responseResult = validateResponse({
+        text:             llmResult.text,
+        executionContext: contextResult.executionContext,
+      });
+
+      const gen1Trace: RuntimeTrace = {
+        ...trace,
+        // Step 7
+        promptBuilt:       true,
+        promptSectionCount: promptResult.sectionCount,
+        promptCharCount:    promptResult.promptCharCount,
+        // Step 8
+        llmModel:            llmResult.model,
+        llmPromptTokens:     llmResult.promptTokens,
+        llmCompletionTokens: llmResult.completionTokens,
+        llmWarnings:         llmResult.warnings,
+        // Step 9
+        responseValidationPassed:   responseResult.passed,
+        responseValidationFailures: responseResult.failures,
+        responseValidationWarnings: responseResult.warnings,
+        responseUsedFallback:       responseResult.usedFallback,
+        responseWordCount:          responseResult.wordCount,
+      };
+
+      return {
+        text:           responseResult.text,
+        decision:       decisionResult.action,
+        runtimeVersion: RUNTIME_VERSION,
+        trace:          gen1Trace,
+      };
+    } catch (err) {
+      console.error('[GEN1] Pipeline error in steps 7-9:', err instanceof Error ? err.message : String(err));
+      return {
+        text:           GEN1_SAFE_FALLBACK_TEXT,
+        decision:       'fallback',
+        runtimeVersion: RUNTIME_VERSION,
+        trace:          { ...trace, gen1PipelineError: true },
+      };
+    }
+  }
+
+  // ── Shadow mode: run gen1 in background, return placeholder ───────────────
+  if (mode === 'shadow') {
+    Promise.resolve().then(async () => {
+      const promptResult = buildPrompt({ executionContext: contextResult.executionContext });
+      const llmResult    = await generateResponse({
+        systemPrompt: promptResult.systemPrompt,
+        userMessage:  promptResult.userMessage,
+        userId:       input.userId,
+      });
+      const responseResult = validateResponse({
+        text:             llmResult.text,
+        executionContext: contextResult.executionContext,
+      });
+      console.log(
+        `[GEN1-SHADOW] action=${decisionResult.action} model=${llmResult.model}` +
+        ` passed=${responseResult.passed} text="${responseResult.text.substring(0, 60)}..."`,
+      );
+    }).catch((err: unknown) => {
+      console.error('[GEN1-SHADOW] Error:', err instanceof Error ? err.message : String(err));
+    });
+  }
+
+  // ── Default (v1 or shadow fall-through): return placeholder ───────────────
   return {
     text:           PLACEHOLDER_TEXT,
     decision:       'ACT-12 FALLBACK (stub)',

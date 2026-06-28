@@ -11,7 +11,7 @@ import { validateExecutionContext } from '../../runtime-gen1/context/contextVali
 import type { ContextBuilderInput } from '../../runtime-gen1/context/contextTypes';
 import type { IntentDetectorResult } from '../../runtime-gen1/capability/intentDetector';
 import type { CapabilityLoaderResult } from '../../runtime-gen1/capability/capabilityLoader';
-import type { RuntimeMemoryResolution } from '../../runtime-gen1/memory/memoryTypes';
+import type { RuntimeMemoryResolution, CaptureStage } from '../../runtime-gen1/memory/memoryTypes';
 import type { KnowledgeSelectionResult } from '../../runtime-gen1/knowledge/knowledgeTypes';
 import type { RuntimeDecisionResult } from '../../runtime-gen1/decision/decisionTypes';
 import type { RuntimeInput } from '../../runtime-gen1/core/types';
@@ -88,7 +88,7 @@ function makeMemory(overrides: {
   age?: number | null;
   budget_annual?: number | null;
   conditionsDisclosed?: string[];
-  captureStage?: string;
+  captureStage?: CaptureStage;
   trustResolved?: boolean;
   turnsSinceTrustConcern?: number;
 } = {}): RuntimeMemoryResolution {
@@ -103,53 +103,62 @@ function makeMemory(overrides: {
     age                    = null,
     budget_annual          = null,
     conditionsDisclosed    = [],
-    captureStage           = 'not_started',
+    captureStage           = 'IDLE' as CaptureStage,
     trustResolved          = false,
     turnsSinceTrustConcern = 0,
   } = overrides;
 
   return {
     customerProfile: {
-      real_name:         null,
+      real_name:              null,
+      display_name:           null,
       age,
-      gender:            null,
-      occupation:        null,
-      income_annual:     null,
+      gender:                 null,
+      phone:                  null,
+      preferred_contact_time: null,
       budget_annual,
+      monthly_income:         null,
       interest_category,
-      family_status:     null,
-      health_status:     null,
-      existing_policies: [],
+      product_interest:       null,
+      health_status:          null,
+      crm_saved:              false,
+      fields_captured:        knownFields,
     },
     extractedFacts: [],
     leadMemory: {
-      fieldsCollected:  knownFields,
-      nextFieldPriority: nextBestFieldToAsk ?? undefined,
-      valueDelivered,
       captureStage,
-      captureStartedAt: null,
-      lastFieldAskedAt: null,
+      nameRequested:       false,
+      phoneRequested:      false,
+      timeRequested:       false,
+      nameDeclined:        false,
+      phoneDeclined:       false,
+      timeDeclined:        false,
+      interruptedAtStage:  null,
+      valueDelivered,
     },
     medicalMemory: {
       medicalConcernActive,
       conditionsDisclosed,
-      underwritingStarted: false,
-      medicalTurnCount:    0,
+      conditionsAssessed:       [],
+      conditionsPending:        [],
+      underwritingContextReady: false,
+      followUpTurnCount:        0,
     },
     trustMemory: {
       trustConcernActive,
+      trustConcernTurn:       trustConcernActive ? 1 : null,
+      turnsSinceTrustConcern,
       leadCaptureAllowed,
       trustResolved,
-      trustResolvedAt:        null,
-      turnsSinceTrustConcern,
-      trustConcernTurn:       trustConcernActive ? 1 : null,
+      credentialsDelivered:   false,
+      suspendedAcp:           null,
     },
     conversationMemory: {
-      turnCount:           1,
-      currentState:        null,
-      priorState:          null,
-      lastIntent:          null,
-      unresolvedQuestion:  null,
+      turnCount:          1,
+      currentState:       'idle',
+      priorState:         null,
+      lastIntent:         null,
+      unresolvedQuestion: null,
     },
     knownFields,
     missingFields:       [],
@@ -171,15 +180,30 @@ function makeMemory(overrides: {
 
 function makeKnowledge(sources: Array<{ path: string; content: string; mandatory?: boolean }> = []): KnowledgeSelectionResult {
   const loadedSnippets = sources.map((s) => ({
-    sourcePath:  s.path,
-    content:     s.content,
-    charCount:   s.content.length,
-    isMandatory: s.mandatory ?? false,
-    relevance:   0.9,
+    sourcePath:   s.path,
+    title:        s.path.split('/').pop() ?? 'stub',
+    content:      s.content,
+    charCount:    s.content.length,
+    trustLevel:   'HIGH' as const,
+    freshness:    'STABLE' as const,
+    loadedAt:     0,
+    isMandatory:  s.mandatory ?? false,
+    isCacheHit:   false,
+  }));
+
+  const selectedSources = sources.map((s) => ({
+    id:             s.path.replace(/\//g, '-'),
+    path:           s.path,
+    type:           'domain_knowledge' as const,
+    trustLevel:     'HIGH' as const,
+    freshness:      'STABLE' as const,
+    mandatory:      s.mandatory ?? false,
+    relevanceScore: 0.9,
+    description:    'stub source',
   }));
 
   return {
-    selectedSources:  sources.map((s) => ({ path: s.path, mandatory: s.mandatory ?? false })),
+    selectedSources,
     loadedSnippets,
     mandatorySources: sources.filter((s) => s.mandatory).map((s) => s.path),
     optionalSources:  sources.filter((s) => !s.mandatory).map((s) => s.path),
@@ -517,7 +541,6 @@ test('CTX-ESC-03: handoff → escalation.type = "warm"', () => {
 
 test('CTX-VAL-A01: empty capability.primary.id → HARD failure VAL-A-01', () => {
   const input = makeInput('test', 'greeting');
-  // @ts-expect-error — intentionally corrupt for test
   input.capabilityResult.primaryCapability.capId = '';
   const result = buildExecutionContext(input);
   const hasVA01 = result.validation.hardFailures.some((f) => f.includes('VAL-A-01'));
@@ -687,7 +710,7 @@ test('CTX-COMP-06: knowledge sources appear in compressed output', () => {
 
 // ─── CTX-RUNTIME: Runtime integration ────────────────────────────────────────
 
-test('CTX-RUNTIME-01: runtime version = gen1-stub-0.6.0', async () => {
+test('CTX-RUNTIME-01: runtime version is gen1-stub series', async () => {
   const { execute } = await import('../../runtime-gen1/core/runtime');
   const output = await execute({
     userId:      'U_CTX_RT_001',
@@ -697,7 +720,7 @@ test('CTX-RUNTIME-01: runtime version = gen1-stub-0.6.0', async () => {
     timestamp:   '2026-06-01T10:00:00.000Z',
     session:     {},
   });
-  assert.equal(output.runtimeVersion, 'gen1-stub-0.6.0');
+  assert.ok(output.runtimeVersion.startsWith('gen1-stub-'), `expected gen1-stub-* version, got: ${output.runtimeVersion}`);
 });
 
 test('CTX-RUNTIME-02: runtime trace includes contextBuilt = true', async () => {

@@ -70,6 +70,20 @@ export interface RuntimeTrace {
   knowledgeDecisionReason?: string;
   mandatoryKnowledgeIncluded?: boolean;
   knowledgeFragmentsAdded?: string[];
+  // Phase 10.7 additions — prompt builder + LLM adapter + response validator
+  promptBuilt?: boolean;
+  promptSectionCount?: number;
+  promptCharCount?: number;
+  llmModel?: string;
+  llmPromptTokens?: number;
+  llmCompletionTokens?: number;
+  llmWarnings?: string[];
+  responseValidationPassed?: boolean;
+  responseValidationFailures?: string[];
+  responseValidationWarnings?: string[];
+  responseUsedFallback?: boolean;
+  responseWordCount?: number;
+  gen1PipelineError?: boolean;
   // Phase 10.6 additions — context builder
   contextBuilt?: boolean;
   contextValidationPassed?: boolean;
