@@ -72,6 +72,10 @@ export interface ProposalRecord {
   status:               ProposalStatus;
   createdAt:            string;
   updatedAt:            string;
+  // Optional flags set by Architecture Guardian during SSI validation (Phase 12.0D+).
+  // Absent on proposals produced by the learning loop (Phase 12.0C).
+  duplicateCapability?: boolean;
+  duplicateKnowledge?:  boolean;
 }
 
 export interface ProposalEngineResult {
