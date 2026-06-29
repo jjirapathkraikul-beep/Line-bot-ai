@@ -32,7 +32,8 @@ export type IssueCategory =
   | 'PRODUCT'
   | 'TRUST'
   | 'MEDICAL'
-  | 'HANDOFF';
+  | 'HANDOFF'
+  | 'OTHER';
 
 export interface IssueRecord {
   issueId:           string;           // auto: ISSUE-0001, ISSUE-0002, ...
