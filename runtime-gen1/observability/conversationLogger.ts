@@ -34,6 +34,9 @@ export interface ConversationLogEntry {
   fallbackReason:          string | null;
   error:                   string | null;
   responseLength:          number;
+  // Phase 19B: knowledge retrieval fields for QA review
+  selectedKnowledgeSources?: string[];  // AIOS/ paths loaded for this turn
+  loadedKnowledgeCount?:     number;    // how many knowledge files were actually loaded
 }
 
 export function buildConversationId(userId: string, timestamp: string): string {
