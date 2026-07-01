@@ -10,8 +10,11 @@
 // or llmAdapter partial-decode may leave adjacent lone surrogates (U+D83D U+DE0A) in string.
 // Both cases are fixed here before the response reaches the LINE Adapter.
 
+import type { ExecutionContext } from '../context/contextTypes';
+
 export interface ResponseFormatterInput {
   text: string;
+  executionContext?: ExecutionContext;
 }
 
 export interface ResponseFormatterResult {
@@ -95,6 +98,57 @@ function removeRoboticPhrases(text: string): { text: string; changed: boolean } 
   return { text: out, changed: out !== text };
 }
 
+function norm(text: string): string {
+  return text.normalize('NFC').toLowerCase();
+}
+
+function hasGoodHealthPrimeContext(ctx: ExecutionContext): boolean {
+  const haystack = [
+    ctx.request.rawInput,
+    ctx.request.normalizedInput,
+    ...ctx.memory.knownFacts.map((f) => `${f.field}:${f.value}`),
+  ].join('\n');
+  const n = norm(haystack);
+  return n.includes('good health prime') || n.includes('good_health_prime') || n.includes('health prime');
+}
+
+function hasSelectedCategoryOrProduct(ctx: ExecutionContext): boolean {
+  const n = norm(`${ctx.request.rawInput}\n${ctx.request.normalizedInput}`);
+  return ctx.intent.primary !== 'unknown' ||
+    hasGoodHealthPrimeContext(ctx) ||
+    n.includes('ประกันสุขภาพ') ||
+    n.includes('สุขภาพ') ||
+    n.includes('ลดหย่อนภาษี') ||
+    n.includes('ภาษี') ||
+    n.includes('เกษียณ') ||
+    n.includes('มะเร็ง') ||
+    n.includes('ลงทุน') ||
+    n.includes('good health prime') ||
+    n.includes('tokio supertax') ||
+    n.includes('smart planning');
+}
+
+function replaceGenericBroadFollowup(
+  text: string,
+  ctx?: ExecutionContext,
+): { text: string; changed: boolean } {
+  if (!ctx || !hasSelectedCategoryOrProduct(ctx)) return { text, changed: false };
+
+  const genericBroadCta =
+    /\n?\s*(?:ตอนนี้)?\s*(?:กำลัง)?\s*มองหาความคุ้มครองด้านไหนเป็นพิเศษครับ\??\s*$|\n?\s*คุณสนใจ(?:ใน)?ด้านไหนเป็นพิเศษครับ\??\s*$/u;
+  if (!genericBroadCta.test(text)) return { text, changed: false };
+
+  let replacement = '';
+  if (hasGoodHealthPrimeContext(ctx)) {
+    replacement = 'ปกติเข้าโรงพยาบาลไหนครับ? ผมจะเทียบค่าห้องกับแผนให้ดูครับ';
+  } else if (ctx.intent.primary === 'health_insurance') {
+    replacement = 'ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ?';
+  }
+
+  const out = text.replace(genericBroadCta, replacement ? `\n\n${replacement}` : '');
+  return { text: out, changed: out !== text };
+}
+
 // Rule WS: normalize whitespace — trailing spaces per line and excess blank lines.
 function normalizeWhitespace(text: string): { text: string; changed: boolean } {
   let out = text;
@@ -128,6 +182,9 @@ export function formatResponse(input: ResponseFormatterInput): ResponseFormatter
 
   const style = removeRoboticPhrases(text);
   if (style.changed) { appliedRules.push('REMOVE_ROBOTIC_PHRASES'); text = style.text; }
+
+  const contextualCta = replaceGenericBroadFollowup(text, input.executionContext);
+  if (contextualCta.changed) { appliedRules.push('REPLACE_CONTEXTUAL_BROAD_FOLLOWUP'); text = contextualCta.text; }
 
   const ws = normalizeWhitespace(text);
   if (ws.changed) { appliedRules.push('NORMALIZE_WHITESPACE'); text = ws.text; }

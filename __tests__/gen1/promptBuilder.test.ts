@@ -9,6 +9,18 @@ import { generateResponse, __setMockLlmFn,
          GEN1_SAFE_FALLBACK_TEXT }                          from '../../runtime-gen1/response/llmAdapter';
 import { validateResponse, RESPONSE_SAFE_FALLBACK_TEXT }   from '../../runtime-gen1/response/responseValidator';
 import { execute, RUNTIME_VERSION }                         from '../../runtime-gen1/core/runtime';
+import {
+  GHP_COMBINED_BUCKET_DIRECT_ANSWER,
+  GHP_OPD_DIRECT_ANSWER,
+  getGoodHealthPrimeCombinedBucketDirectAnswer,
+  isGoodHealthPrimeCombinedBucketQuestion,
+} from '../../runtime-gen1/response/goodHealthPrimeCombinedBucket';
+import {
+  HEALTH_CATEGORY_CONFIRMATION_DIRECT_ANSWER,
+  HEALTH_INTEREST_DIRECT_ANSWER,
+  HEALTH_OPTIONS_DIRECT_ANSWER,
+  getHealthInsuranceFlowDirectAnswer,
+} from '../../runtime-gen1/response/healthInsuranceFlow';
 import type { ExecutionContext }                            from '../../runtime-gen1/context/contextTypes';
 import type { RuntimeInput }                               from '../../runtime-gen1/core/types';
 
@@ -436,11 +448,332 @@ test('PROMPT-GHP-08: combined bucket questions do NOT trigger validation-risk ha
     'Combined bucket question must not trigger handoff escalation');
 });
 
+test('GHP-BUCKET-01: helper detects semantically similar combined-bucket follow-ups', () => {
+  const samples = [
+    'ถ้าไม่ได้ใช้ OPD เอาไปตรวจสุขภาพได้ไหม',
+    'เอา OPD ไปตรวจสุขภาพได้ไหม',
+    'เอา OPD ไปฉีดวัคซีนได้ไหม',
+    'ใช้วงเงินนี้ฉีดวัคซีนได้ไหม',
+    'ตรวจสุขภาพกับวัคซีนใช้วงเงินเดียวกันไหม',
+    'OPD กับตรวจสุขภาพใช้วงเงินเดียวกันไหม',
+    'ถ้าไม่ได้ใช้ OPD ใช้ทำอะไรได้บ้าง',
+  ];
+
+  for (const sample of samples) {
+    assert.equal(isGoodHealthPrimeCombinedBucketQuestion(sample), true, sample);
+  }
+});
+
+test('GHP-BUCKET-02: recent Good Health Prime history enables direct combined-bucket answer', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'เอา OPD ไปฉีดวัคซีนได้ไหม';
+  ctx.request.normalizedInput = 'เอา opd ไปฉีดวัคซีนได้ไหม';
+  ctx.intent.primary = 'health_insurance';
+  ctx.intent.isProductIntent = true;
+
+  const answer = getGoodHealthPrimeCombinedBucketDirectAnswer({
+    executionContext: ctx,
+    conversationHistory: [{
+      sessionId: 's1',
+      userMessage: 'Good Health Prime มี OPD ไหม',
+      assistantResponse: 'Good Health Prime มี OPD แบบเฉพาะเงื่อนไขครับ',
+      timestamp: '2026-07-02T10:00:00.000Z',
+      intent: 'health_insurance',
+    }],
+  });
+
+  assert.equal(answer, GHP_COMBINED_BUCKET_DIRECT_ANSWER);
+});
+
+test('GHP-BUCKET-03: validation-risk handoff is not overridden by combined-bucket direct answer', () => {
+  const ctx = makeGhpOpdCtx(
+    'ข้อยกเว้นของ Good Health Prime มีอะไรบ้าง',
+    'ข้อยกเว้นของ good health prime มีอะไรบ้าง',
+  );
+  ctx.decision.action = 'handoff';
+  ctx.decision.shouldEscalate = true;
+
+  const answer = getGoodHealthPrimeCombinedBucketDirectAnswer({ executionContext: ctx });
+  assert.equal(answer, null);
+});
+
+test('GHP-BUCKET-04: runtime answers checkup follow-up directly without calling LLM', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => {
+    llmCalled = true;
+    return 'บางกรมธรรม์อาจครอบคลุม ขึ้นอยู่กับเงื่อนไขกรมธรรม์ครับ';
+  });
+
+  try {
+    const output = await execute({
+      ...makeRuntimeInput('ถ้าไม่ได้ใช้ OPD เอาไปตรวจสุขภาพได้ไหม'),
+      session: { data: { product_interest: 'Good Health Prime' } },
+    });
+
+    assert.equal(llmCalled, false, 'Direct known-fact answer should bypass LLM');
+    assert.equal(output.text, GHP_COMBINED_BUCKET_DIRECT_ANSWER);
+    assert.equal(output.decision, 'educate');
+    assert.equal(output.trace.llmModel, 'direct-answer');
+    assert.equal(output.trace.shouldEscalate, false);
+    assert.ok(!output.text.includes('บางกรมธรรม์อาจ'));
+    assert.ok(!output.text.includes('ขึ้นอยู่กับเงื่อนไขกรมธรรม์'));
+    assert.ok(!output.text.includes('ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ'));
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('GHP-BUCKET-05: runtime answers vaccine follow-up directly without generic policy wording', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => {
+    llmCalled = true;
+    return 'ขึ้นอยู่กับเงื่อนไขกรมธรรม์ครับ';
+  });
+
+  try {
+    const output = await execute({
+      ...makeRuntimeInput('เอา OPD ไปฉีดวัคซีนได้ไหม'),
+      session: { data: { product_interest: 'Good Health Prime' } },
+    });
+
+    assert.equal(llmCalled, false, 'Direct known-fact answer should bypass LLM');
+    assert.equal(output.text, GHP_COMBINED_BUCKET_DIRECT_ANSWER);
+    assert.equal(output.trace.llmModel, 'direct-answer');
+    assert.equal(output.trace.shouldEscalate, false);
+    assert.ok(!output.text.includes('บางกรมธรรม์อาจ'));
+    assert.ok(!output.text.includes('ขึ้นอยู่กับเงื่อนไขกรมธรรม์'));
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('GHP-BUCKET-06: single-turn explicit Good Health Prime vaccine question gets direct answer', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => {
+    llmCalled = true;
+    return 'บางกรมธรรม์อาจครอบคลุมครับ';
+  });
+
+  try {
+    const output = await execute(makeRuntimeInput('Good Health Prime เอา OPD ไปฉีดวัคซีนได้ไหม'));
+
+    assert.equal(llmCalled, false, 'Explicit product known-fact answer should bypass LLM');
+    assert.equal(output.text, GHP_COMBINED_BUCKET_DIRECT_ANSWER);
+    assert.equal(output.trace.llmModel, 'direct-answer');
+    assert.equal(output.trace.shouldEscalate, false);
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('GHP-OPD-01: Good Health Prime OPD question does not append generic broad CTA', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => {
+    llmCalled = true;
+    return 'Good Health Prime มี OPD ครับ ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ?';
+  });
+
+  try {
+    const output = await execute(makeRuntimeInput('Good Health Prime มี OPD ไหม'));
+
+    assert.equal(llmCalled, false, 'Known Good Health Prime OPD answer should bypass generic LLM CTA');
+    assert.equal(output.text, GHP_OPD_DIRECT_ANSWER);
+    assert.ok(output.text.includes('ไม่ใช่ OPD เหมาจ่ายทั่วไปทุกครั้งที่ไปหาหมอ'));
+    assert.ok(output.text.includes('วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี'));
+    assert.ok(!output.text.includes('ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ'));
+    assert.ok(!output.text.includes('คุณสนใจด้านไหนเป็นพิเศษครับ'));
+    assert.ok(!output.text.includes('มีอะไรให้ช่วยเพิ่มเติมไหมครับ'));
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('HEALTH-FLOW-01: initial health insurance interest enters hospital-context flow without broad CTA', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => {
+    llmCalled = true;
+    return 'ประกันสุขภาพคือความคุ้มครองค่ารักษาครับ ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ?';
+  });
+
+  try {
+    const output = await execute(makeRuntimeInput('สนใจประกันสุขภาพ'));
+
+    assert.equal(llmCalled, false, 'Health category entry should bypass generic LLM loop');
+    assert.equal(output.text, HEALTH_INTEREST_DIRECT_ANSWER);
+    assert.ok(output.text.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+    assert.ok(!output.text.includes('ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ'));
+    assert.ok(!output.text.includes('คุณสนใจในด้านไหนเป็นพิเศษครับ'));
+    assert.equal(output.trace.llmModel, 'direct-answer');
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('HEALTH-FLOW-02: options question after health context lists health plan types only', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => {
+    llmCalled = true;
+    return 'มีประกันชีวิต ประกันสุขภาพ ประกันอุบัติเหตุ และประกันควบการลงทุนครับ คุณสนใจในด้านไหนเป็นพิเศษครับ?';
+  });
+
+  try {
+    const output = await execute({
+      ...makeRuntimeInput('มีแบบไหนให้เลือกบ้าง'),
+      session: { data: { product_interest: 'ประกันสุขภาพ' } },
+    });
+
+    assert.equal(llmCalled, false, 'Health-context options should bypass broad category answer');
+    assert.equal(output.text, HEALTH_OPTIONS_DIRECT_ANSWER);
+    assert.ok(output.text.includes('ถ้าพูดเฉพาะประกันสุขภาพ'));
+    assert.ok(output.text.includes('แผนเน้น IPD'));
+    assert.ok(output.text.includes('OPD / ตรวจสุขภาพ / วัคซีน'));
+    assert.ok(!output.text.includes('ประกันชีวิต'));
+    assert.ok(!output.text.includes('ประกันอุบัติเหตุ'));
+    assert.ok(!output.text.includes('ประกันควบการลงทุน'));
+    assert.ok(!output.text.includes('คุณสนใจในด้านไหนเป็นพิเศษครับ'));
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('HEALTH-FLOW-03: short health category confirmation asks hospital, not category again', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  let llmCalled = false;
+  __setMockLlmFn(async () => {
+    llmCalled = true;
+    return 'ประกันสุขภาพช่วยเรื่องค่ารักษาครับ ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ?';
+  });
+
+  try {
+    const output = await execute({
+      ...makeRuntimeInput('ประกันสุขภาพ'),
+      session: { data: { product_interest: 'ประกันสุขภาพ' } },
+    });
+
+    assert.equal(llmCalled, false, 'Short category confirmation should bypass generic explanation loop');
+    assert.equal(output.text, HEALTH_CATEGORY_CONFIRMATION_DIRECT_ANSWER);
+    assert.ok(output.text.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+    assert.ok(!output.text.includes('ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ'));
+    assert.ok(!output.text.includes('คุณสนใจในด้านไหนเป็นพิเศษครับ'));
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('HEALTH-FLOW-04: helper uses recent health context for "มีแบบไหนให้เลือกบ้าง"', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'มีแบบไหนให้เลือกบ้าง';
+  ctx.request.normalizedInput = 'มีแบบไหนให้เลือกบ้าง';
+
+  const answer = getHealthInsuranceFlowDirectAnswer({
+    executionContext: ctx,
+    conversationHistory: [{
+      sessionId: 's1',
+      userMessage: 'สนใจประกันสุขภาพ',
+      assistantResponse: HEALTH_INTEREST_DIRECT_ANSWER,
+      timestamp: '2026-07-02T10:00:00.000Z',
+      intent: 'health_insurance',
+    }],
+  });
+
+  assert.equal(answer, HEALTH_OPTIONS_DIRECT_ANSWER);
+});
+
+test('HEALTH-FLOW-05: pure broad planning question is not forced into health flow', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'อยากวางแผนประกัน';
+  ctx.request.normalizedInput = 'อยากวางแผนประกัน';
+  ctx.intent.primary = 'recommendation_request';
+  ctx.intent.isRecommendationIntent = true;
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx });
+  assert.equal(answer, null);
+});
+
+test('HEALTH-FLOW-06: health recommendation question is not overridden by category-entry direct answer', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'สนใจประกันสุขภาพ อายุ 39 ปี งบ 20,000 บาทต่อปี แนะนำให้หน่อยครับ';
+  ctx.request.normalizedInput = 'สนใจประกันสุขภาพ อายุ 39 ปี งบ 20,000 บาทต่อปี แนะนำให้หน่อยครับ';
+  ctx.intent.primary = 'health_insurance';
+  ctx.intent.isProductIntent = true;
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx });
+  assert.equal(answer, null);
+});
+
+test('HEALTH-FLOW-07: selected health context replaces generic broad CTA with hospital question', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  __setMockLlmFn(async () => (
+    'ค่าเบี้ยประกันสุขภาพขึ้นอยู่กับอายุและแผนความคุ้มครองครับ ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ?'
+  ));
+
+  try {
+    const output = await execute(makeRuntimeInput('อยากรู้ราคาเบี้ยประกันสุขภาพครับ'));
+
+    assert.ok(output.text.includes('ค่าเบี้ยประกันสุขภาพขึ้นอยู่กับอายุและแผนความคุ้มครองครับ'));
+    assert.ok(output.text.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+    assert.ok(!output.text.includes('ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ'));
+    assert.ok(!output.text.includes('คุณสนใจด้านไหนเป็นพิเศษครับ'));
+    assert.equal(output.trace.formatterApplied, true);
+    assert.ok(output.trace.formatterRules?.includes('REPLACE_CONTEXTUAL_BROAD_FOLLOWUP'));
+    assert.notEqual(output.trace.llmModel, 'direct-answer');
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
+test('GENERIC-CTA-01: broad unclear insurance planning may still ask broad category follow-up', async () => {
+  const savedMode = process.env.AI_RUNTIME_MODE;
+  process.env.AI_RUNTIME_MODE = 'gen1';
+  __setMockLlmFn(async () => 'ได้ครับ ตอนนี้มองหาความคุ้มครองด้านไหนเป็นหลักครับ — สุขภาพ ชีวิต หรือเกษียณ');
+
+  try {
+    const output = await execute(makeRuntimeInput('อยากวางแผนประกัน'));
+
+    assert.ok(output.text.includes('ตอนนี้มองหาความคุ้มครองด้านไหนเป็นหลักครับ'));
+    assert.notEqual(output.trace.llmModel, 'direct-answer');
+  } finally {
+    __setMockLlmFn(null);
+    process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
+  }
+});
+
 test('PROMPT-QUALITY-01: prompt prohibits robotic opening phrase', () => {
   const ctx = makeCtx();
   const result = buildPrompt({ executionContext: ctx });
   assert.ok(result.systemPrompt.includes('never open with: "จากข้อมูลที่คุณให้มาครับ"'));
   assert.ok(!result.systemPrompt.includes('Preferred: "จากข้อมูลที่คุณให้มาครับ'));
+});
+
+test('PROMPT-QUALITY-02: health follow-up guidance asks hospital instead of broad category CTA', () => {
+  const ctx = makeCtx();
+  ctx.intent.primary = 'health_insurance';
+  ctx.intent.isProductIntent = true;
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+  assert.ok(result.systemPrompt.includes('Do NOT ask broad category-selection CTAs after health insurance is selected'));
 });
 
 test('PROMPT-HANDOFF-01: validation-risk handoff asks for name and phone context', () => {

@@ -11,6 +11,8 @@ import { buildPrompt } from '../response/promptBuilder';
 import { generateResponse, GEN1_SAFE_FALLBACK_TEXT } from '../response/llmAdapter';
 import { validateResponse } from '../response/responseValidator';
 import { formatResponse } from '../response/responseFormatter';
+import { getGoodHealthPrimeCombinedBucketDirectAnswer } from '../response/goodHealthPrimeCombinedBucket';
+import { getHealthInsuranceFlowDirectAnswer } from '../response/healthInsuranceFlow';
 import { buildConversationId, logConversationTurn, getRecentConversationTurnsForUser } from '../observability/conversationLogger';
 import { enqueueAudit } from '../observability/auditQueue';
 import { recordMetric } from '../observability/runtimeMetrics';
@@ -137,6 +139,99 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
 
   // ── Steps 7–10: Prompt → LLM → Validator → Formatter ────────────────────────
   try {
+    const ghpDirectAnswer = getGoodHealthPrimeCombinedBucketDirectAnswer({
+      executionContext: contextResult.executionContext,
+      conversationHistory,
+    });
+    const healthFlowDirectAnswer = ghpDirectAnswer ? null : getHealthInsuranceFlowDirectAnswer({
+      executionContext: contextResult.executionContext,
+      conversationHistory,
+    });
+    const directAnswer = ghpDirectAnswer ?? healthFlowDirectAnswer;
+    const directAnswerSource = ghpDirectAnswer
+      ? 'good_health_prime_combined_bucket'
+      : healthFlowDirectAnswer
+      ? 'health_insurance_flow'
+      : null;
+
+    if (directAnswer) {
+      const responseResult  = validateResponse({ text: directAnswer, executionContext: contextResult.executionContext });
+      const formatterResult = formatResponse({
+        text: responseResult.text,
+        executionContext: contextResult.executionContext,
+      });
+
+      console.log('[GEN1_PIPELINE]', JSON.stringify({
+        intent:           intentResult.intent,
+        capability:       capabilityResult.primaryCapability.capId,
+        action:           decisionResult.action,
+        strategyId:       strategyResult.strategyId,
+        promptBuilt:      false,
+        llmCalled:        false,
+        directAnswer:     directAnswerSource,
+        validatorPassed:  responseResult.passed,
+        formatterApplied: formatterResult.changed,
+      }));
+
+      const successEntry: ConversationLogEntry = {
+        conversationId:          buildConversationId(input.userId, input.timestamp),
+        sessionId:               contextResult.contextTrace.auditId,
+        timestamp:               input.timestamp,
+        runtimeVersion:          RUNTIME_VERSION,
+        runtimeMode:             'gen1',
+        userId:                  `${input.userId.substring(0, 8)}***`,
+        userMessage:             input.message.substring(0, 60),
+        assistantResponse:       formatterResult.text.substring(0, 150),
+        latency:                 Date.now() - startTime,
+        intent:                  intentResult.intent,
+        capability:              capabilityResult.primaryCapability.capId,
+        decision:                decisionResult.action,
+        strategy:                strategyResult.strategyId,
+        questionCount:           responseResult.questionCount ?? 0,
+        recommendationDelivered: decisionResult.action === 'recommend',
+        educationDelivered:      memoryResult.leadMemory.valueDelivered,
+        leadCaptureStarted:      memoryResult.leadMemory.captureStage !== 'IDLE' && memoryResult.leadMemory.captureStage !== 'COMPLETE',
+        leadCaptureCompleted:    memoryResult.leadMemory.captureStage === 'COMPLETE',
+        trustFlow:               intentResult.flags.isTrustSignal,
+        medicalFlow:             intentResult.flags.isMedicalSignal,
+        formatterApplied:        formatterResult.changed,
+        validatorPassed:         responseResult.passed,
+        fallbackUsed:            responseResult.usedFallback,
+        fallbackReason:          responseResult.usedFallback ? 'direct-answer-validation-fallback' : null,
+        error:                   null,
+        responseLength:          formatterResult.text.length,
+        selectedKnowledgeSources: knowledgeResult.selectedSources.map((s) => s.path),
+        loadedKnowledgeCount:     knowledgeResult.loadedSnippets.length,
+      };
+      await logConversationTurn(successEntry);
+      await enqueueAudit(successEntry);
+      recordMetric(successEntry);
+
+      return {
+        text:           formatterResult.text,
+        decision:       decisionResult.action,
+        runtimeVersion: RUNTIME_VERSION,
+        trace: {
+          ...trace,
+          promptBuilt:                  false,
+          llmModel:                     'direct-answer',
+          responseValidationPassed:     responseResult.passed,
+          responseValidationFailures:   responseResult.failures,
+          responseValidationWarnings:   responseResult.warnings,
+          responseUsedFallback:         responseResult.usedFallback,
+          responseWordCount:            responseResult.wordCount,
+          formatterApplied:             formatterResult.changed,
+          formatterRules:               formatterResult.appliedRules,
+          strategyReason:               strategyResult.strategyGoal,
+          questionCount:                responseResult.questionCount,
+          educationDelivered:           memoryResult.leadMemory.valueDelivered,
+          leadCaptureStarted:           memoryResult.leadMemory.captureStage !== 'IDLE' && memoryResult.leadMemory.captureStage !== 'COMPLETE',
+          recommendationDelivered:      false,
+          valueDeliveredBeforeCapture:  decisionResult.shouldCollectLead ? memoryResult.leadMemory.valueDelivered : undefined,
+        },
+      };
+    }
+
     const promptResult    = buildPrompt({ executionContext: contextResult.executionContext, conversationHistory });
     const llmResult       = await generateResponse({
       systemPrompt: promptResult.systemPrompt,
@@ -144,7 +239,10 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
       userId:       input.userId,
     });
     const responseResult  = validateResponse({ text: llmResult.text, executionContext: contextResult.executionContext });
-    const formatterResult = formatResponse({ text: responseResult.text });
+    const formatterResult = formatResponse({
+      text: responseResult.text,
+      executionContext: contextResult.executionContext,
+    });
 
     console.log('[GEN1_PIPELINE]', JSON.stringify({
       intent:           intentResult.intent,
@@ -184,6 +282,8 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
       fallbackReason:          null,
       error:                   null,
       responseLength:          formatterResult.text.length,
+      selectedKnowledgeSources: knowledgeResult.selectedSources.map((s) => s.path),
+      loadedKnowledgeCount:     knowledgeResult.loadedSnippets.length,
     };
     await logConversationTurn(successEntry);
     await enqueueAudit(successEntry);
@@ -263,6 +363,8 @@ export async function executeGen1(input: RuntimeInput): Promise<RuntimeOutput> {
       fallbackReason:          errMsg,
       error:                   errMsg,
       responseLength:          GEN1_SAFE_FALLBACK_TEXT.length,
+      selectedKnowledgeSources: knowledgeResult.selectedSources.map((s) => s.path),
+      loadedKnowledgeCount:     knowledgeResult.loadedSnippets.length,
     };
     await logConversationTurn(failureEntry);
     await enqueueAudit(failureEntry);

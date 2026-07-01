@@ -372,7 +372,8 @@ function buildFollowupGuidance(ctx: ExecutionContext): string {
   } else if (intent === 'cancer_insurance') {
     lines.push('  Use: "ตอนนี้กำลังรักษาอยู่หรืออยู่ระหว่างตรวจเพิ่มเติมครับ" or "มีประวัติโรคที่เกี่ยวกับมะเร็งไหมครับ"');
   } else if (intent === 'health_insurance') {
-    lines.push('  Use: "ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ" or "มีโรคประจำตัวหรือประวัติสุขภาพที่ต้องพิจารณาไหมครับ"');
+    lines.push('  Use: "ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ?"');
+    lines.push('  Do NOT ask broad category-selection CTAs after health insurance is selected, including "ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ" or "คุณสนใจในด้านไหนเป็นพิเศษครับ?"');
   } else if (intent === 'retirement_planning' || intent === 'investment_linked') {
     lines.push('  Use: "เป้าหมายเกษียณที่อยากได้ต่อเดือนประมาณเท่าไรครับ" or "วางแผนจะเกษียณอายุเท่าไรครับ"');
   } else if (intent === 'tax_planning') {
