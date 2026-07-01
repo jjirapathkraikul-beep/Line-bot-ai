@@ -254,10 +254,23 @@ function buildGoodHealthPrimeGuidance(ctx: ExecutionContext): string {
   return [
     'Good Health Prime OPD answer pattern (MANDATORY for OPD/checkup/vaccine questions):',
     '  • Start directly: "มีครับ แต่ไม่ใช่ OPD เหมาจ่ายทั่วไปทุกครั้งที่ไปหาหมอ"',
-    '  • Explain 3 groups: post-hospitalization OPD within 31 days max 2 visits; accident OPD within 24 hours; combined annual benefit for annual health checkup OR outpatient treatment OR vaccination.',
-    '  • Combined annual benefit limits by plan: 2000=3,000; 3000=5,000; 4000=6,000; 6000=8,000; 8000=10,000; 10000=15,000; 12000=20,000 baht/year.',
-    '  • If asked whether unused OPD can be used for checkup/vaccine, answer yes within the same combined annual bucket: annual health checkup OR outpatient treatment OR vaccination.',
+    '  • Explain 3 parts of outpatient/non-admission coverage:',
+    '    1. Post-hospitalization OPD — within 31 days after discharge, max 2 visits',
+    '    2. Accident OPD — within 24 hours of the accident',
+    '    3. วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี — one combined annual sub-limit bucket for: annual health checkup OR outpatient treatment OR vaccination',
+    '  • LABEL this 3rd bucket EXACTLY as: "วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี" — do NOT call it "สิทธิประโยชน์รวมประจำปีตามแผน" or any variation.',
+    '  • Format the combined sub-limit bucket as a BULLET LIST (NOT "A=B" notation):',
+    '    - แผนค่าห้อง 2,000: 3,000 บาท/ปี',
+    '    - แผนค่าห้อง 3,000: 5,000 บาท/ปี',
+    '    - แผนค่าห้อง 4,000: 6,000 บาท/ปี',
+    '    - แผนค่าห้อง 6,000: 8,000 บาท/ปี',
+    '    - แผนค่าห้อง 8,000: 10,000 บาท/ปี',
+    '    - แผนค่าห้อง 10,000: 15,000 บาท/ปี',
+    '    - แผนค่าห้อง 12,000: 20,000 บาท/ปี',
+    '  • CLARIFY that the main annual plan limits are SEPARATE from this sub-limit. Example: "แผนค่าห้อง 2,000 มีวงเงินเจ็บป่วย/อุบัติเหตุ 500,000 บาทต่อปี และวงเงิน 18 โรคร้ายแรง 1,000,000 บาทต่อปี".',
+    '  • If asked whether unused OPD can be used for checkup/vaccine (or vice versa), answer yes directly within the same combined annual bucket: annual health checkup OR outpatient treatment OR vaccination.',
     '  • Do NOT describe Good Health Prime as a full general OPD plan.',
+    '  • Do NOT append generic CTA like "ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ?" after the OPD answer. If CTA is needed, use only context-aware CTA: "ถ้าบอกแผนที่สนใจ ผมช่วยดูวงเงินหมวดนี้ให้ได้ครับ".',
   ].join('\n');
 }
 

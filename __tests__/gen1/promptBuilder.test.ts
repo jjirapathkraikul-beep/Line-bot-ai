@@ -285,10 +285,10 @@ test('PROMPT-14: isMedicalSignal=true → output rules include medical-specific 
   assert.ok(result.systemPrompt.includes('แพทย์วินิจฉัยแล้วหรือยังครับ'), 'Expected medical follow-up question in output rules');
 });
 
-test('PROMPT-GHP-01: Good Health Prime OPD prompt includes product-specific OPD answer pattern', () => {
+function makeGhpOpdCtx(rawInput: string, normalizedInput: string) {
   const ctx = makeCtx();
-  ctx.request.rawInput = 'Good Health Prime มี OPD ไหม';
-  ctx.request.normalizedInput = 'good health prime มี opd ไหม';
+  ctx.request.rawInput = rawInput;
+  ctx.request.normalizedInput = normalizedInput;
   ctx.intent.primary = 'health_insurance';
   ctx.intent.isProductIntent = true;
   ctx.memory.knownFacts = [
@@ -305,13 +305,39 @@ test('PROMPT-GHP-01: Good Health Prime OPD prompt includes product-specific OPD 
       'Annual checkup, OR outpatient treatment, OR vaccination (per policy year, one combined benefit) | 3,000 | 5,000 | 6,000 | 8,000 | 10,000 | 15,000 | 20,000',
     ].join('\n'),
   }];
+  return ctx;
+}
+
+test('PROMPT-GHP-01: Good Health Prime OPD prompt includes product-specific OPD answer pattern', () => {
+  const ctx = makeGhpOpdCtx('Good Health Prime มี OPD ไหม', 'good health prime มี opd ไหม');
 
   const result = buildPrompt({ executionContext: ctx });
   assert.ok(result.systemPrompt.includes('มีครับ แต่ไม่ใช่ OPD เหมาจ่ายทั่วไปทุกครั้งที่ไปหาหมอ'));
-  assert.ok(result.systemPrompt.includes('within 31 days max 2 visits'));
+  // Updated: new guidance uses 'after discharge' wording
+  assert.ok(result.systemPrompt.includes('within 31 days after discharge, max 2 visits'));
   assert.ok(result.systemPrompt.includes('within 24 hours'));
   assert.ok(result.systemPrompt.includes('annual health checkup OR outpatient treatment OR vaccination'));
-  assert.ok(result.systemPrompt.includes('12000=20,000'));
+  // New: bucket must be labeled correctly — NOT "สิทธิประโยชน์รวมประจำปีตามแผน"
+  assert.ok(result.systemPrompt.includes('วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี'),
+    'Expected bucket label "วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี" in prompt');
+  // The guidance itself contains the forbidden label (in the "do NOT call it" prohibition instruction).
+  // So we test that the instruction to AVOID it is present, rather than testing absence of the phrase.
+  assert.ok(result.systemPrompt.includes('do NOT call it "สิทธิประโยชน์รวมประจำปีตามแผน"'),
+    'Must include instruction prohibiting misleading label');
+  // New: bullet-list format, not "A=B" format
+  assert.ok(result.systemPrompt.includes('แผนค่าห้อง 2,000: 3,000 บาท/ปี'),
+    'Expected bullet-list format "แผนค่าห้อง 2,000: 3,000 บาท/ปี"');
+  assert.ok(result.systemPrompt.includes('แผนค่าห้อง 12,000: 20,000 บาท/ปี'),
+    'Expected bullet-list format for plan 12000');
+  assert.ok(!result.systemPrompt.includes('12000=20,000'),
+    'Must NOT use "A=B" notation for plan limits');
+  // New: main annual limits must be mentioned separately
+  assert.ok(result.systemPrompt.includes('500,000'),
+    'Expected main annual limit 500,000 (plan 2000 illness/accident) to clarify it is separate');
+  // New: no generic CTA
+  assert.ok(result.systemPrompt.includes('ตอนนี้กำลังมองหาความคุ้มครองด้านไหนเป็นพิเศษครับ') === false ||
+    result.systemPrompt.includes('Do NOT append generic CTA'),
+    'Must restrict generic CTA in OPD answer');
 });
 
 test('PROMPT-GHP-02: short OPD follow-up uses retained Good Health Prime context', () => {
@@ -336,25 +362,78 @@ test('PROMPT-GHP-02: short OPD follow-up uses retained Good Health Prime context
 });
 
 test('PROMPT-GHP-03: checkup/vaccine questions require direct combined bucket answer', () => {
-  const ctx = makeCtx();
-  ctx.request.rawInput = 'ถ้าไม่ได้ใช้ OPD เอาไปตรวจสุขภาพได้ไหม';
-  ctx.request.normalizedInput = 'ถ้าไม่ได้ใช้ opd เอาไปตรวจสุขภาพได้ไหม';
-  ctx.intent.primary = 'health_insurance';
-  ctx.intent.isProductIntent = true;
-  ctx.memory.knownFacts = [
-    { field: 'product_interest', value: 'Good Health Prime', source: 'customer_stated' },
-  ];
-  ctx.knowledge.sources = [{
-    sourceId: 'Domains-Insurance-Products-Good_Health_Prime.md',
-    relevance: 1,
-    fullPath: 'AIOS/Domains/Insurance/Products/Good_Health_Prime.md',
-    isMandatory: true,
-    excerpt: 'Annual checkup, OR outpatient treatment, OR vaccination (per policy year, one combined benefit)',
-  }];
+  const ctx = makeGhpOpdCtx(
+    'ถ้าไม่ได้ใช้ OPD เอาไปตรวจสุขภาพได้ไหม',
+    'ถ้าไม่ได้ใช้ opd เอาไปตรวจสุขภาพได้ไหม',
+  );
 
   const result = buildPrompt({ executionContext: ctx });
-  assert.ok(result.systemPrompt.includes('answer yes within the same combined annual bucket'));
+  assert.ok(result.systemPrompt.includes('answer yes directly within the same combined annual bucket'));
   assert.ok(result.systemPrompt.includes('annual health checkup OR outpatient treatment OR vaccination'));
+  // Must use the correct bucket label
+  assert.ok(result.systemPrompt.includes('วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี'));
+});
+
+test('PROMPT-GHP-04: "เอา OPD ไปฉีดวัคซีนได้ไหม" triggers combined bucket guidance with direct-yes instruction', () => {
+  const ctx = makeGhpOpdCtx(
+    'เอา OPD ไปฉีดวัคซีนได้ไหม',
+    'เอา opd ไปฉีดวัคซีนได้ไหม',
+  );
+
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('Good Health Prime OPD answer pattern'),
+    'Expected GHP OPD pattern guidance');
+  assert.ok(result.systemPrompt.includes('answer yes directly within the same combined annual bucket'),
+    'Expected direct-yes instruction for vaccine question');
+  assert.ok(result.systemPrompt.includes('annual health checkup OR outpatient treatment OR vaccination'));
+});
+
+test('PROMPT-GHP-05: "ตรวจสุขภาพกับวัคซีนใช้วงเงินเดียวกันไหม" triggers combined bucket guidance', () => {
+  const ctx = makeGhpOpdCtx(
+    'ตรวจสุขภาพกับวัคซีนใช้วงเงินเดียวกันไหม',
+    'ตรวจสุขภาพกับวัคซีนใช้วงเงินเดียวกันไหม',
+  );
+
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('Good Health Prime OPD answer pattern'),
+    'Expected GHP OPD pattern guidance for checkup/vaccine bucket question');
+  assert.ok(result.systemPrompt.includes('วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี'),
+    'Expected correct bucket label');
+});
+
+test('PROMPT-GHP-06: OPD prompt clarifies main annual limits are separate from sub-limit bucket', () => {
+  const ctx = makeGhpOpdCtx('Good Health Prime มี OPD ไหม', 'good health prime มี opd ไหม');
+
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('CLARIFY that the main annual plan limits are SEPARATE'),
+    'Expected instruction to clarify main limits are separate');
+  assert.ok(result.systemPrompt.includes('500,000'),
+    'Expected example main annual limit figure in guidance');
+});
+
+test('PROMPT-GHP-07: OPD prompt does not use "A=B" notation for plan limits', () => {
+  const ctx = makeGhpOpdCtx('Good Health Prime มี OPD ไหม', 'good health prime มี opd ไหม');
+
+  const result = buildPrompt({ executionContext: ctx });
+  // Old misleading format must be gone
+  assert.ok(!result.systemPrompt.includes('2000=3,000'), 'Must not use "2000=3,000" notation');
+  assert.ok(!result.systemPrompt.includes('12000=20,000'), 'Must not use "12000=20,000" notation');
+  // New readable format must be present
+  assert.ok(result.systemPrompt.includes('แผนค่าห้อง 2,000: 3,000 บาท/ปี'), 'Expected readable bullet format');
+});
+
+test('PROMPT-GHP-08: combined bucket questions do NOT trigger validation-risk handoff escalation', () => {
+  // "ตรวจสุขภาพกับวัคซีนใช้วงเงินเดียวกันไหม" is a known-fact question, not an underwriting/claim question
+  const ctx = makeGhpOpdCtx(
+    'ตรวจสุขภาพกับวัคซีนใช้วงเงินเดียวกันไหม',
+    'ตรวจสุขภาพกับวัคซีนใช้วงเงินเดียวกันไหม',
+  );
+  // makeCtx() defaults to no escalation (required: false, shouldEscalate: false) — no override needed
+
+  const result = buildPrompt({ executionContext: ctx });
+  // The prompt should NOT contain handoff escalation language for this known-fact question
+  assert.ok(!result.systemPrompt.includes('ESCALATE: Include a warm handoff'),
+    'Combined bucket question must not trigger handoff escalation');
 });
 
 test('PROMPT-QUALITY-01: prompt prohibits robotic opening phrase', () => {
