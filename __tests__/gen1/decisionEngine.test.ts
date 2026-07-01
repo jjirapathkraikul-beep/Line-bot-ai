@@ -72,7 +72,7 @@ function makeCapability(): CapabilityLoaderResult {
     priority: 'STANDARD',
     shouldInterruptCurrentState: false,
     reason: 'stub',
-  };
+  } as unknown as CapabilityLoaderResult;
 }
 
 function makeMemory(overrides: {
@@ -141,12 +141,13 @@ function makeMemory(overrides: {
     memoryTrace: {
       fieldsFromSession:  [],
       fieldsFromMessage:  [],
+      fieldsFromHistory:  [],
       fieldsBlocked:      [],
       leadCaptureAllowed,
       trustActive:        trustConcernActive,
       medicalActive:      medicalConcernActive,
     },
-  };
+  } as unknown as RuntimeMemoryResolution;
 }
 
 function makeKnowledge(): KnowledgeSelectionResult {
@@ -290,6 +291,66 @@ test('DECISION-R04-04: human handoff with all contact fields → shouldCollectLe
   );
   assert.equal(result.shouldCollectLead, false);
   assert.equal(result.askField, null);
+});
+
+test('DECISION-R01b-01: exclusion scope question → validation-risk handoff', () => {
+  const input = makeInput('health_insurance', { isProductIntent: true }, { knownFields: [] });
+  input.runtimeInput.message = 'มะเร็งไม่คุ้มครองจริงไหม';
+  const result = makeDecision(input);
+  assert.equal(result.action, 'handoff');
+  assert.equal(result.shouldEscalate, true);
+  assert.equal(result.shouldCollectLead, true);
+  assert.equal(result.askField, 'phone');
+  assert.equal(result.decisionTrace.ruleMatchedId, 'R01b');
+});
+
+test('DECISION-R01b-02: 120-day disease-list question → validation-risk handoff, no invented answer path', () => {
+  const input = makeInput('health_insurance', { isProductIntent: true }, { knownFields: ['phone'] });
+  input.runtimeInput.message = 'โรคใน waiting period 120 วัน มีโรคอะไรบ้าง';
+  const result = makeDecision(input);
+  assert.equal(result.action, 'handoff');
+  assert.equal(result.shouldEscalate, true);
+  assert.equal(result.askField, 'real_name');
+  assert.equal(result.decisionTrace.ruleMatchedId, 'R01b');
+});
+
+test('DECISION-R01b-03: validation-risk topics outrank trust-concern wording', () => {
+  const samples = [
+    'มะเร็งไม่คุ้มครองจริงไหม',
+    'เห็นว่ามะเร็งไม่คุ้มครองใช่ไหม',
+    'เนื้องอกไม่คุ้มครองจริงหรือเปล่า',
+    'นิ่วไม่คุ้มครองใช่ไหม',
+    'โรครอคอย 120 วันมีอะไรบ้าง',
+    'ข้อยกเว้นของ Good Health Prime มีอะไรบ้าง',
+    'เคลมมะเร็งได้ไหมถ้าเอกสารเขียนว่า cancer ไม่คุ้มครอง',
+  ];
+
+  for (const sample of samples) {
+    const input = makeInput('human_handoff', { isHumanRequest: true }, { knownFields: [] });
+    input.runtimeInput.message = sample;
+    const result = makeDecision(input);
+    assert.equal(result.action, 'handoff', sample);
+    assert.equal(result.shouldEscalate, true, sample);
+    assert.equal(result.shouldCollectLead, true, sample);
+    assert.equal(result.askField, 'phone', sample);
+    assert.equal(result.decisionTrace.ruleMatchedId, 'R01b', sample);
+  }
+});
+
+test('DECISION-R01-TRUST-01: pure trust questions still route to trust_concern', () => {
+  const samples = [
+    'บริษัทนี้น่าเชื่อถือไหม',
+    'โตเกียวมารีนเชื่อถือได้ไหม',
+  ];
+
+  for (const sample of samples) {
+    const input = makeInput('trust_concern', { isTrustSignal: true }, { knownFields: [] });
+    input.runtimeInput.message = sample;
+    const result = makeDecision(input);
+    assert.equal(result.action, 'build_trust', sample);
+    assert.equal(result.shouldCollectLead, false, sample);
+    assert.equal(result.decisionTrace.ruleMatchedId, 'R01', sample);
+  }
 });
 
 // ─── R07: Product Education ───────────────────────────────────────────────────

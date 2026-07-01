@@ -114,6 +114,7 @@ const MEDICAL_MAP: Array<{ keywords: string[]; label: string }> = [
 
 // Product interest: map from message keywords to canonical interest_category
 const PRODUCT_INTEREST_MAP: Array<{ keywords: string[]; category: string }> = [
+  { keywords: ['good health prime', 'good health', 'health prime'], category: 'Good Health Prime' },
   { keywords: ['ประกันสุขภาพ', 'health insurance', 'สุขภาพ'],   category: 'ประกันสุขภาพ' },
   { keywords: ['ประกันมะเร็ง', 'cancer care', 'ci', 'โรคร้าย'], category: 'ประกันมะเร็ง' },
   { keywords: ['ลดหย่อนภาษี', 'ภาษี', 'tax'],                  category: 'วางแผนภาษี' },
@@ -583,15 +584,19 @@ export function resolveMemory(input: MemoryResolverInput): RuntimeMemoryResoluti
   if (!hasInterestCategory && !hasSessionInterest) {
     const inferred = INTENT_CATEGORY_MAP[intentResult.intent];
     if (inferred) {
+      const hasGoodHealthPrimeContext = [...historyExtracted, ...messageExtracted].some(
+        (f) => f.field === 'product_interest' && f.value === 'Good Health Prime',
+      );
+      const inferredValue = hasGoodHealthPrimeContext ? 'Good Health Prime' : inferred;
       inferredFacts.push({
         field: 'interest_category',
-        value: inferred,
+        value: inferredValue,
         rawMatch: intentResult.intent,
         confidence: 0.80,
       });
       inferredFacts.push({
         field: 'product_interest',
-        value: inferred,
+        value: inferredValue,
         rawMatch: intentResult.intent,
         confidence: 0.80,
       });

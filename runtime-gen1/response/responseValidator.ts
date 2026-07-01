@@ -25,7 +25,7 @@ export interface ResponseValidatorResult {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const RESPONSE_SAFE_FALLBACK_TEXT =
-  'ขอโทษด้วยนะครับ ตอนนี้ระบบกำลังปรับปรุงอยู่ครับ มีอะไรให้ช่วยเพิ่มเติมไหมครับ?';
+  'ขอโทษด้วยนะครับ ตอนนี้ระบบกำลังปรับปรุงอยู่ครับ ขอให้คุณจิราวัฒน์ช่วยตรวจคำถามนี้ต่อให้นะครับ';
 
 // Phone/contact request patterns (Thai)
 const PHONE_REQUEST_PATTERNS = [

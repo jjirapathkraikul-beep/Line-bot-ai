@@ -73,8 +73,8 @@ const ACTION_OUTPUT_RULES: Record<string, string[]> = {
   ],
   handoff: [
     'Warmly inform the customer that Jirawat will personally assist them.',
-    'No product pitch. No data collection.',
-    'No follow-up question.',
+    'No product pitch.',
+    'If this is a validation-risk handoff, ask for contact context naturally: name and phone number for Jirawat follow-up. This is the only allowed two-field contact request.',
     'Closing tone — warm and affirming.',
   ],
   claim_guide: [
@@ -115,8 +115,8 @@ function buildRole(ctx: ExecutionContext): string {
     'You are NOT a general-purpose AI. Respond ONLY about insurance and financial planning.',
     'You represent Jirawat Jirapathkraikul personally — every response must reflect his advisory standards.',
     'Advisor voice: Respond naturally as a Thai financial advisor — not a chatbot.',
-    '  Preferred: "จากข้อมูลที่คุณให้มาครับ..." | "โดยทั่วไปแล้ว..." | "ในกรณีลักษณะนี้..."',
-    '  Avoid: opening with AI filler, repeating the same phrase twice, robotic corporate language.',
+    '  Preferred: direct answer first, then useful breakdown, then mental model, then a relevant next step only if needed.',
+    '  Avoid: "จากข้อมูลที่คุณให้มาครับ", opening with AI filler, repeating the same phrase twice, robotic corporate language.',
     `Active ACP:       ${ctx.capability.primary.name} (${ctx.capability.primary.acpPath})`,
     `Decision Action:  ${ctx.decision.action.toUpperCase()}`,
     `Priority:         ${ctx.decision.priority}`,
@@ -220,13 +220,45 @@ function buildKnowledge(ctx: ExecutionContext): string {
   const optional  = ctx.knowledge.sources.filter((s) => !s.isMandatory);
   if (mandatory.length > 0) {
     lines.push('[MANDATORY CONTEXT — always apply in this response]:');
-    mandatory.forEach((s) => lines.push(`  • ${s.excerpt.substring(0, 200)}`));
+    mandatory.forEach((s) => lines.push(`  • ${s.excerpt.substring(0, 1600)}`));
   }
   if (optional.length > 0) {
     lines.push('[REFERENCE CONTEXT — use if relevant]:');
-    optional.forEach((s) => lines.push(`  • [${s.sourceId}] ${s.excerpt.substring(0, 150)}`));
+    optional.forEach((s) => lines.push(`  • [${s.sourceId}] ${s.excerpt.substring(0, 600)}`));
   }
   return lines.join('\n');
+}
+
+function hasGoodHealthPrimeContext(ctx: ExecutionContext): boolean {
+  const haystack = [
+    ctx.request.rawInput,
+    ...ctx.memory.knownFacts.map((f) => `${f.field}:${f.value}`),
+    ...ctx.knowledge.sources.map((s) => `${s.sourceId} ${s.fullPath} ${s.excerpt}`),
+  ].join('\n').toLowerCase();
+  return haystack.includes('good health prime') || haystack.includes('good_health_prime');
+}
+
+function isGoodHealthPrimeOpdBenefitQuestion(ctx: ExecutionContext): boolean {
+  const n = ctx.request.normalizedInput;
+  return hasGoodHealthPrimeContext(ctx) && (
+    n.includes('opd') ||
+    n.includes('ผู้ป่วยนอก') ||
+    n.includes('ตรวจสุขภาพ') ||
+    n.includes('วัคซีน') ||
+    n.includes('ฉีดวัคซีน')
+  );
+}
+
+function buildGoodHealthPrimeGuidance(ctx: ExecutionContext): string {
+  if (!isGoodHealthPrimeOpdBenefitQuestion(ctx)) return '';
+  return [
+    'Good Health Prime OPD answer pattern (MANDATORY for OPD/checkup/vaccine questions):',
+    '  • Start directly: "มีครับ แต่ไม่ใช่ OPD เหมาจ่ายทั่วไปทุกครั้งที่ไปหาหมอ"',
+    '  • Explain 3 groups: post-hospitalization OPD within 31 days max 2 visits; accident OPD within 24 hours; combined annual benefit for annual health checkup OR outpatient treatment OR vaccination.',
+    '  • Combined annual benefit limits by plan: 2000=3,000; 3000=5,000; 4000=6,000; 6000=8,000; 8000=10,000; 10000=15,000; 12000=20,000 baht/year.',
+    '  • If asked whether unused OPD can be used for checkup/vaccine, answer yes within the same combined annual bucket: annual health checkup OR outpatient treatment OR vaccination.',
+    '  • Do NOT describe Good Health Prime as a full general OPD plan.',
+  ].join('\n');
 }
 
 function buildDecision(ctx: ExecutionContext): string {
@@ -391,6 +423,7 @@ function buildOutputRules(ctx: ExecutionContext): string {
   }
   lines.push('  4. Do NOT use any phrase listed as prohibited in the Restrictions or Response Profile sections');
   lines.push('  5. Never open with filler phrases: "ขอบคุณสำหรับคำถาม", "ยินดีที่จะช่วย", "นั่นเป็นคำถามที่น่าสนใจ"');
+  lines.push('     Also never open with: "จากข้อมูลที่คุณให้มาครับ"');
   lines.push('  6. Keep paragraph length to 2–3 sentences maximum; use bullet lists for multiple items');
   lines.push('  7. Memory continuity (CP-05): Before asking any question, check Section 6. If age/budget/health/product interest are already known → USE them, NEVER re-ask.');
   lines.push('  8. Conversation flow: Answer → Educate → Recommend → ONE follow-up. Never ask two questions in the same response.');
@@ -410,6 +443,12 @@ function buildOutputRules(ctx: ExecutionContext): string {
   }
   if (s.topicShiftDetected) {
     lines.push('  ⚠️  [CP-08 MANDATORY] Topic shift detected — abandon previous lead capture flow entirely. Respond to the customer\'s new topic only.');
+  }
+
+  const ghpGuidance = buildGoodHealthPrimeGuidance(ctx);
+  if (ghpGuidance) {
+    lines.push('');
+    lines.push(ghpGuidance);
   }
 
   lines.push('');

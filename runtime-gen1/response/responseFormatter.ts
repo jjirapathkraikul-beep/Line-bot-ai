@@ -85,6 +85,16 @@ function stripMarkdown(text: string): { text: string; changed: boolean } {
   return { text: out, changed: out !== text };
 }
 
+// Rule STYLE: remove robotic openings and generic dead-end CTAs from LINE replies.
+function removeRoboticPhrases(text: string): { text: string; changed: boolean } {
+  let out = text;
+  out = out.replace(/^\s*จากข้อมูลที่คุณให้มาครับ[,\s]*/u, '');
+  out = out.replace(/^\s*จากข้อมูลที่คุณให้มา[,\s]*/u, '');
+  out = out.replace(/\n?\s*มีอะไรให้ช่วยเพิ่มเติมไหมครับ\??\s*$/u, '');
+  out = out.replace(/\n?\s*มีอะไรให้ช่วยอีกไหมครับ\??\s*$/u, '');
+  return { text: out, changed: out !== text };
+}
+
 // Rule WS: normalize whitespace — trailing spaces per line and excess blank lines.
 function normalizeWhitespace(text: string): { text: string; changed: boolean } {
   let out = text;
@@ -115,6 +125,9 @@ export function formatResponse(input: ResponseFormatterInput): ResponseFormatter
 
   const md = stripMarkdown(text);
   if (md.changed) { appliedRules.push('STRIP_MARKDOWN'); text = md.text; }
+
+  const style = removeRoboticPhrases(text);
+  if (style.changed) { appliedRules.push('REMOVE_ROBOTIC_PHRASES'); text = style.text; }
 
   const ws = normalizeWhitespace(text);
   if (ws.changed) { appliedRules.push('NORMALIZE_WHITESPACE'); text = ws.text; }

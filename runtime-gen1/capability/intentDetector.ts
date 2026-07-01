@@ -26,11 +26,23 @@ function matches(norm: string, keywords: readonly string[]): string[] {
 }
 
 // ─── Keyword tables (Thai NFC — source of truth for Gen1) ────────────────────
-// Priority order: trust/fraud > claim/hospital > medical > human > product > price > recommendation > unknown
+// Priority order: validation-risk > trust/fraud > claim/hospital > medical > human > product > price > recommendation > unknown
 // Ported from lib/trustEngine.ts + lib/leadCapture.ts + medicalEngine.ts, then extended.
+
+const VALIDATION_RISK_KEYWORDS = [
+  'ไม่คุ้มครอง', 'ยกเว้น', 'ข้อยกเว้น', 'exclusion',
+  'มะเร็งไม่คุ้มครอง', 'เนื้องอก', 'ถุงน้ำ', 'cyst', 'นิ่ว',
+  'ไส้เลื่อน', 'ต้อกระจก', 'ริดสีดวง', 'ต่อมทอนซิล',
+  'adenoid', 'อะดีนอยด์', 'เส้นเลือดขอด', 'เยื่อบุโพรงมดลูก',
+  '120 วัน', '120-day', '120 day', 'โรคที่รอคอย',
+  'โรครอคอย', 'รายชื่อโรครอคอย', 'ระยะเวลารอคอย', 'waiting period',
+  'เงื่อนไขกรมธรรม์', 'นิยามโรคร้ายแรง', 'นิยาม ci',
+  'critical illness', 'underwriting', 'เอกสารเคลม', 'ระยะเวลาเคลม',
+] as const;
 
 const TRUST_KEYWORDS = [
   'มิจฉาชีพ', 'น่าเชื่อถือไหม', 'น่าเชื่อถือมั้ย',
+  'เชื่อถือได้ไหม', 'เชื่อถือได้มั้ย',
   'ไว้ใจได้ไหม', 'ไว้ใจได้มั้ย', 'ของจริงไหม',
   'จริงมั้ย', 'จริงไหม',
 ] as const;
@@ -63,7 +75,7 @@ const MEDICAL_KEYWORDS = [
   'เป็นมะเร็ง', 'เคยเป็นมะเร็ง', 'เป็นโรค', 'โรคประจำตัว',
   'เบาหวาน', 'ความดันโลหิต', 'ความดันสูง', 'ไขมันในเลือด',
   'เคยผ่าตัด', 'ทำประกันได้ไหม', 'รับประกันไหม',
-  'ประวัติสุขภาพ', 'ตรวจสุขภาพ', 'สุขภาพไม่ดี', 'หัวใจ', 'ไขมัน',
+  'ประวัติสุขภาพ', 'สุขภาพไม่ดี', 'หัวใจ', 'ไขมัน',
 ] as const;
 
 const HUMAN_HANDOFF_KEYWORDS = [
@@ -75,6 +87,9 @@ const HUMAN_HANDOFF_KEYWORDS = [
 
 // Products — order matters within product group (more specific first)
 const HEALTH_KEYWORDS     = ['good health prime', 'good health', 'health prime', 'ประกันสุขภาพ'] as const;
+const HEALTH_BENEFIT_KEYWORDS = [
+  'opd', 'ผู้ป่วยนอก', 'ตรวจสุขภาพ', 'วัคซีน', 'ฉีดวัคซีน',
+] as const;
 const CANCER_KEYWORDS     = ['tokio cancer care', 'cancer care', 'ประกันมะเร็งและโรคร้ายแรง', 'ประกันมะเร็ง', 'มะเร็ง'] as const;
 const TAX_KEYWORDS        = ['tokyo supertax', 'supertax', 'ประกันลดหย่อนภาษี', 'ลดหย่อนภาษี', 'ลดภาษี'] as const;
 const RETIREMENT_KEYWORDS = ['ประกันเกษียณ', 'วางแผนเกษียณ', 'เกษียณ', 'retirement'] as const;
@@ -116,6 +131,16 @@ export function detectIntent(text: string): IntentDetectorResult {
   const emergencyMatches = matches(n, EMERGENCY_KEYWORDS);
   const isEmergency = emergencyMatches.length > 0;
 
+  // Priority 0: validation-risk policy/contract topics must outrank trust phrasing.
+  const validationRiskKw = matches(n, VALIDATION_RISK_KEYWORDS);
+  if (validationRiskKw.length > 0) {
+    return makeResult('human_handoff', 0.94, validationRiskKw, {
+      isTrustSignal: false, isMedicalSignal: false, isEmergency,
+      isHumanRequest: true, isProductIntent: false,
+      isPriceIntent: false, isRecommendationIntent: false,
+    });
+  }
+
   // Priority 1: trust/fraud (CRITICAL)
   const trustKw = matches(n, TRUST_KEYWORDS);
   if (trustKw.length > 0) {
@@ -150,6 +175,17 @@ export function detectIntent(text: string): IntentDetectorResult {
     return makeResult('hospital_question', 0.88, hospitalKw, {
       isTrustSignal: false, isMedicalSignal: false, isEmergency,
       isHumanRequest: false, isProductIntent: false,
+      isPriceIntent: false, isRecommendationIntent: false,
+    });
+  }
+
+  // Benefit questions such as OPD/checkup/vaccine are product-benefit questions,
+  // not underwriting, even though they contain health words.
+  const healthBenefitKw = matches(n, HEALTH_BENEFIT_KEYWORDS);
+  if (healthBenefitKw.length > 0) {
+    return makeResult('health_insurance', 0.88, healthBenefitKw, {
+      isTrustSignal: false, isMedicalSignal: false, isEmergency,
+      isHumanRequest: false, isProductIntent: true,
       isPriceIntent: false, isRecommendationIntent: false,
     });
   }

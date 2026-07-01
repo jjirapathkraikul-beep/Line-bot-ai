@@ -171,6 +171,7 @@ function makeMemory(overrides: {
     memoryTrace: {
       fieldsFromSession:  [],
       fieldsFromMessage:  [],
+      fieldsFromHistory:  [],
       fieldsBlocked:      [],
       leadCaptureAllowed,
       trustActive:        trustConcernActive,
@@ -336,6 +337,30 @@ test('CTX-BUILD-04: compressedContext is non-empty string', () => {
 test('CTX-BUILD-05: contextTrace.compressedCharCount matches compressedContext.length', () => {
   const result = buildExecutionContext(makeInput('สวัสดี', 'greeting'));
   assert.equal(result.contextTrace.compressedCharCount, result.compressedContext.length);
+});
+
+test('CTX-GHP-01: Good Health Prime knowledge excerpt keeps OPD/checkup/vaccine details beyond file header', () => {
+  const longHeader = 'HEADER\n'.repeat(80);
+  const ghpContent = [
+    longHeader,
+    '**Non-admission (outpatient) benefits** — paid as incurred unless noted:',
+    '| Continued outpatient treatment after discharge | Within 31 days, max 2 visits | Paid as incurred |',
+    '| Accident outpatient treatment | Within 24 hours of accident | Paid as incurred |',
+    '| Annual checkup, OR outpatient treatment, OR vaccination (per policy year, one combined benefit) | 3,000 | 5,000 | 6,000 | 8,000 | 10,000 | 15,000 | 20,000 |',
+  ].join('\n');
+  const result = buildExecutionContext(makeInput(
+    'Good Health Prime มี OPD ไหม',
+    'health_insurance',
+    { isProductIntent: true },
+    {},
+    {},
+    'answer',
+    [{ path: 'AIOS/Domains/Insurance/Products/Good_Health_Prime.md', content: ghpContent, mandatory: true }],
+  ));
+  const excerpt = result.executionContext.knowledge.sources[0]?.excerpt ?? '';
+  assert.ok(excerpt.includes('Within 31 days, max 2 visits'));
+  assert.ok(excerpt.includes('Within 24 hours of accident'));
+  assert.ok(excerpt.includes('Annual checkup, OR outpatient treatment, OR vaccination'));
 });
 
 // ─── CTX-REQUEST: Request section ────────────────────────────────────────────

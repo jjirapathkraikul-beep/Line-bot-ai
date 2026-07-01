@@ -285,6 +285,98 @@ test('PROMPT-14: isMedicalSignal=true → output rules include medical-specific 
   assert.ok(result.systemPrompt.includes('แพทย์วินิจฉัยแล้วหรือยังครับ'), 'Expected medical follow-up question in output rules');
 });
 
+test('PROMPT-GHP-01: Good Health Prime OPD prompt includes product-specific OPD answer pattern', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'Good Health Prime มี OPD ไหม';
+  ctx.request.normalizedInput = 'good health prime มี opd ไหม';
+  ctx.intent.primary = 'health_insurance';
+  ctx.intent.isProductIntent = true;
+  ctx.memory.knownFacts = [
+    { field: 'product_interest', value: 'Good Health Prime', source: 'customer_stated' },
+  ];
+  ctx.knowledge.sources = [{
+    sourceId: 'Domains-Insurance-Products-Good_Health_Prime.md',
+    relevance: 1,
+    fullPath: 'AIOS/Domains/Insurance/Products/Good_Health_Prime.md',
+    isMandatory: true,
+    excerpt: [
+      'Continued outpatient treatment after discharge | Within 31 days, max 2 visits | Paid as incurred',
+      'Accident outpatient treatment | Within 24 hours of accident | Paid as incurred',
+      'Annual checkup, OR outpatient treatment, OR vaccination (per policy year, one combined benefit) | 3,000 | 5,000 | 6,000 | 8,000 | 10,000 | 15,000 | 20,000',
+    ].join('\n'),
+  }];
+
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('มีครับ แต่ไม่ใช่ OPD เหมาจ่ายทั่วไปทุกครั้งที่ไปหาหมอ'));
+  assert.ok(result.systemPrompt.includes('within 31 days max 2 visits'));
+  assert.ok(result.systemPrompt.includes('within 24 hours'));
+  assert.ok(result.systemPrompt.includes('annual health checkup OR outpatient treatment OR vaccination'));
+  assert.ok(result.systemPrompt.includes('12000=20,000'));
+});
+
+test('PROMPT-GHP-02: short OPD follow-up uses retained Good Health Prime context', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'มี OPD ไหม';
+  ctx.request.normalizedInput = 'มี opd ไหม';
+  ctx.intent.primary = 'health_insurance';
+  ctx.intent.isProductIntent = true;
+  ctx.memory.knownFacts = [
+    { field: 'product_interest', value: 'Good Health Prime', source: 'customer_stated' },
+  ];
+  ctx.knowledge.sources = [{
+    sourceId: 'Domains-Insurance-Products-Good_Health_Prime.md',
+    relevance: 1,
+    fullPath: 'AIOS/Domains/Insurance/Products/Good_Health_Prime.md',
+    isMandatory: true,
+    excerpt: 'Annual checkup, OR outpatient treatment, OR vaccination (per policy year, one combined benefit)',
+  }];
+
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('Good Health Prime OPD answer pattern'));
+});
+
+test('PROMPT-GHP-03: checkup/vaccine questions require direct combined bucket answer', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'ถ้าไม่ได้ใช้ OPD เอาไปตรวจสุขภาพได้ไหม';
+  ctx.request.normalizedInput = 'ถ้าไม่ได้ใช้ opd เอาไปตรวจสุขภาพได้ไหม';
+  ctx.intent.primary = 'health_insurance';
+  ctx.intent.isProductIntent = true;
+  ctx.memory.knownFacts = [
+    { field: 'product_interest', value: 'Good Health Prime', source: 'customer_stated' },
+  ];
+  ctx.knowledge.sources = [{
+    sourceId: 'Domains-Insurance-Products-Good_Health_Prime.md',
+    relevance: 1,
+    fullPath: 'AIOS/Domains/Insurance/Products/Good_Health_Prime.md',
+    isMandatory: true,
+    excerpt: 'Annual checkup, OR outpatient treatment, OR vaccination (per policy year, one combined benefit)',
+  }];
+
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('answer yes within the same combined annual bucket'));
+  assert.ok(result.systemPrompt.includes('annual health checkup OR outpatient treatment OR vaccination'));
+});
+
+test('PROMPT-QUALITY-01: prompt prohibits robotic opening phrase', () => {
+  const ctx = makeCtx();
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('never open with: "จากข้อมูลที่คุณให้มาครับ"'));
+  assert.ok(!result.systemPrompt.includes('Preferred: "จากข้อมูลที่คุณให้มาครับ'));
+});
+
+test('PROMPT-HANDOFF-01: validation-risk handoff asks for name and phone context', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'มะเร็งไม่คุ้มครองจริงไหม';
+  ctx.request.normalizedInput = 'มะเร็งไม่คุ้มครองจริงไหม';
+  ctx.decision.action = 'handoff';
+  ctx.decision.shouldEscalate = true;
+  ctx.decision.shouldCollectLead = true;
+  ctx.decision.askField = 'phone';
+  const result = buildPrompt({ executionContext: ctx });
+  assert.ok(result.systemPrompt.includes('name and phone number for Jirawat follow-up'));
+  assert.ok(result.systemPrompt.includes('only allowed two-field contact request'));
+});
+
 test('PROMPT-15: recommend action → output rules prohibit asking for contact info after recommending (CQ-003)', () => {
   const ctx = makeCtx();
   ctx.decision.action = 'recommend';
@@ -295,7 +387,10 @@ test('PROMPT-15: recommend action → output rules prohibit asking for contact i
 
 test('PROMPT-16: knownFacts present → memory section tells LLM to USE them and never re-ask (CQ-002)', () => {
   const ctx = makeCtx();
-  ctx.memory.knownFacts = [{ field: 'age', value: '39' }, { field: 'budget', value: '20000' }];
+  ctx.memory.knownFacts = [
+    { field: 'age', value: '39', source: 'customer_stated' },
+    { field: 'budget', value: '20000', source: 'customer_stated' },
+  ];
   const result = buildPrompt({ executionContext: ctx });
   assert.ok(result.systemPrompt.includes('CRITICAL: USE these facts'), 'Expected memory continuity instruction');
   assert.ok(result.systemPrompt.includes('age'), 'Expected age in memory section');
@@ -306,7 +401,8 @@ test('PROMPT-17: ROLE section includes advisor voice guidance (CQ-004)', () => {
   const ctx    = makeCtx();
   const result = buildPrompt({ executionContext: ctx });
   assert.ok(result.systemPrompt.includes('Advisor voice'), 'Expected advisor voice guidance in ROLE section');
-  assert.ok(result.systemPrompt.includes('จากข้อมูลที่คุณให้มาครับ'), 'Expected Thai advisor phrase example');
+  assert.ok(result.systemPrompt.includes('direct answer first'), 'Expected direct-answer advisor guidance');
+  assert.ok(!result.systemPrompt.includes('Preferred: "จากข้อมูลที่คุณให้มาครับ'), 'Robotic preferred phrase must not be suggested');
 });
 
 test('PROMPT-18: educate action → output rules include 4-part structure with คืออะไร (CQ-005)', () => {

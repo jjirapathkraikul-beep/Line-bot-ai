@@ -103,10 +103,10 @@ function makeMemory(overrides: {
     nextBestFieldToAsk: null,
     extractedFacts: [],
     memoryDecisionReason: 'stub',
-    memoryTrace: {
-      fieldsFromSession: [], fieldsFromMessage: [], fieldsBlocked: [],
-      leadCaptureAllowed: true, trustActive: false, medicalActive: false,
-    },
+	    memoryTrace: {
+	      fieldsFromSession: [], fieldsFromMessage: [], fieldsFromHistory: [], fieldsBlocked: [],
+	      leadCaptureAllowed: true, trustActive: false, medicalActive: false,
+	    },
   };
 }
 

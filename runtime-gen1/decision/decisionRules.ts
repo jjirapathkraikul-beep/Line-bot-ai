@@ -86,6 +86,46 @@ export function ruleTrustBeforeLead(input: RuntimeDecisionInput): RuntimeDecisio
   });
 }
 
+// ─── R01b: Validation-Risk Handoff (HIGH) ────────────────────────────────────
+// Product/legal/contract questions that require policy-specific validation should
+// not be answered with unsupported certainty. Route to Jirawat with CRM context.
+
+const VALIDATION_RISK_KEYWORDS = [
+  'ไม่คุ้มครอง', 'ยกเว้น', 'ข้อยกเว้น', 'exclusion',
+  '120 วัน', '120-day', '120 day', 'โรคที่รอคอย', 'โรครอคอย',
+  'รายชื่อโรครอคอย', 'ระยะเวลารอคอย', 'waiting period',
+  'มะเร็งไม่คุ้มครอง', 'เนื้องอก', 'ถุงน้ำ', 'cyst',
+  'รายการโรค', 'เงื่อนไขกรมธรรม์',
+  'นิยามโรคร้ายแรง', 'นิยาม ci', 'เอกสารเคลม', 'ระยะเวลาเคลม',
+  'ผ่าตัด', 'ไส้เลื่อน', 'ต้อกระจก', 'ริดสีดวง', 'นิ่ว',
+  'ต่อมทอนซิล', 'อะดีนอยด์', 'เส้นเลือดขอด', 'เยื่อบุโพรงมดลูก',
+  'adenoid', 'critical illness', 'underwriting',
+] as const;
+
+function normDecisionText(text: string): string {
+  return text.normalize('NFC').trim().toLowerCase();
+}
+
+export function isValidationRiskQuestion(text: string): boolean {
+  const n = normDecisionText(text);
+  return VALIDATION_RISK_KEYWORDS.some((kw) => n.includes(normDecisionText(kw)));
+}
+
+export function ruleValidationRiskHandoff(input: RuntimeDecisionInput): RuntimeDecisionRuleResult | null {
+  if (!isValidationRiskQuestion(input.runtimeInput.message)) return null;
+
+  const askField = safePick(HANDOFF_CONTACT_FIELDS, input.memoryResult.knownFields);
+
+  return makeResult('R01b', 'Validation-Risk → Jirawat Handoff', 'handoff', 'HIGH', {
+    shouldCollectLead: askField !== null,
+    shouldEscalate:    true,
+    askField,
+    mustAnswerFirst:   true,
+    reason:            `Validation-risk question detected — avoid unsupported certainty and hand off to Jirawat. ${askField ? `Collecting ${askField} for follow-up.` : 'Contact fields already known.'}`,
+    conditionsMet:     ['validation_risk_question=true'],
+  });
+}
+
 // ─── R02: Medical Before Sales (HIGH) ────────────────────────────────────────
 // Source: ACP-04 Decision_Rules.md — case-by-case language mandatory.
 // No lead fields asked; only ONE medical follow-up question per turn.
@@ -337,6 +377,7 @@ export type DecisionRuleFn = (input: RuntimeDecisionInput) => RuntimeDecisionRul
 
 export const DECISION_RULES: ReadonlyArray<{ id: string; name: string; fn: DecisionRuleFn }> = [
   { id: 'R01',  name: 'Trust Before Lead',              fn: ruleTrustBeforeLead         },
+  { id: 'R01b', name: 'Validation-Risk Handoff',        fn: ruleValidationRiskHandoff   },
   { id: 'R02',  name: 'Medical Before Sales',           fn: ruleMedicalBeforeSales      },
   { id: 'R03',  name: 'Claim / Hospital Before Lead',   fn: ruleClaimHospitalBeforeLead },
   { id: 'R04',  name: 'Human Request → Handoff',        fn: ruleHumanHandoff            },

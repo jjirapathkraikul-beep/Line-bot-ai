@@ -129,6 +129,13 @@ test('"สนใจประกันสุขภาพ" extracts interest_categ
   assert.equal(cat.value, 'ประกันสุขภาพ');
 });
 
+test('"Good Health Prime" extracts exact product_interest for follow-up retention', () => {
+  const facts = extractFactsFromMessage('Good Health Prime มี OPD ไหม');
+  const product = facts.find((f) => f.field === 'product_interest');
+  assert.ok(product, 'product_interest not found');
+  assert.equal(product.value, 'Good Health Prime');
+});
+
 test('"ประกันมะเร็ง" extracts interest_category=ประกันมะเร็ง', () => {
   const facts = extractFactsFromMessage('อยากทำประกันมะเร็ง');
   const cat = facts.find((f) => f.field === 'interest_category');
@@ -246,6 +253,26 @@ test('Product intent → shouldAskField=true, first missing field returned', () 
   const result = resolve('สนใจประกันสุขภาพ');
   assert.equal(result.shouldAskField, true);
   assert.notEqual(result.nextBestFieldToAsk, null, 'should have a field to ask');
+});
+
+test('Good Health Prime history retains product context for short OPD follow-up', () => {
+  const runtimeInput = makeInput('มี OPD ไหม');
+  const intentResult = detectIntent('มี OPD ไหม');
+  const capabilityResult = loadCapability(intentResult);
+  const result = resolveMemory({
+    runtimeInput,
+    intentResult,
+    capabilityResult,
+    conversationHistory: [{
+      sessionId: 's1',
+      userMessage: 'Good Health Prime คืออะไร',
+      assistantResponse: 'Good Health Prime เป็นประกันสุขภาพครับ',
+      timestamp: '2026-06-28T00:00:00.000Z',
+      intent: 'health_insurance',
+    }],
+  });
+  assert.equal(result.customerProfile.product_interest, 'Good Health Prime');
+  assert.ok(result.knownFields.includes('product_interest'));
 });
 
 test('Product intent with age known → age not asked', () => {

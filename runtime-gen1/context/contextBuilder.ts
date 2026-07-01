@@ -187,6 +187,7 @@ function buildMemory(input: ContextBuilderInput): ContextMemory {
     { key: 'phone',                 label: 'phone' },
     { key: 'budget_annual',         label: 'budget_annual' },
     { key: 'interest_category',     label: 'interest_category' },
+    { key: 'product_interest',      label: 'product_interest' },
     { key: 'preferred_contact_time', label: 'preferred_contact_time' },
   ];
   for (const { key, label } of profileFields) {
@@ -205,6 +206,39 @@ function buildMemory(input: ContextBuilderInput): ContextMemory {
 
 // ─── Step 08 / Knowledge ────────────────────────────────────────────────────
 
+function excerptAroundMatchingLines(content: string, patterns: RegExp[], maxChars: number): string {
+  const lines = content.split('\n');
+  const selected = new Set<number>();
+  lines.forEach((line, i) => {
+    if (patterns.some((rx) => rx.test(line))) {
+      for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 1); j++) {
+        selected.add(j);
+      }
+    }
+  });
+
+  if (selected.size === 0) return content.substring(0, maxChars);
+
+  let out = [...selected].sort((a, b) => a - b).map((i) => lines[i]).join('\n');
+  if (out.length > maxChars) out = out.substring(0, maxChars);
+  return out;
+}
+
+function buildKnowledgeExcerpt(sourcePath: string, content: string): string {
+  if (sourcePath.endsWith('Good_Health_Prime.md')) {
+    return excerptAroundMatchingLines(content, [
+      /Non-admission \(outpatient\) benefits/i,
+      /Continued outpatient treatment after discharge/i,
+      /Accident outpatient treatment/i,
+      /Annual checkup, OR outpatient treatment, OR vaccination/i,
+      /Waiting periods/i,
+      /120 days/i,
+      /Standard exclusions/i,
+    ], 1800);
+  }
+  return content.substring(0, 900);
+}
+
 function buildKnowledge(input: ContextBuilderInput): ContextKnowledge {
   const { knowledgeResult } = input;
   const { loadedSnippets, knowledgeTrace } = knowledgeResult;
@@ -212,7 +246,7 @@ function buildKnowledge(input: ContextBuilderInput): ContextKnowledge {
   const sources: ContextKnowledgeFragment[] = loadedSnippets.map((s) => ({
     sourceId:    s.sourcePath.replace('AIOS/', '').replace(/\//g, '-'),
     relevance:   1.0,   // Phase 10.6: all loaded snippets passed the 0.7 threshold
-    excerpt:     s.content.substring(0, 300),
+    excerpt:     buildKnowledgeExcerpt(s.sourcePath, s.content),
     fullPath:    s.sourcePath,
     isMandatory: s.isMandatory,
   }));
@@ -320,7 +354,7 @@ function buildResponseProfile(input: ContextBuilderInput): ResponseProfile {
       profile.tone             = 'warm, affirming';
       profile.length           = 'short';
       profile.empathyLevel     = 'medium';
-      profile.questionStrategy = 'no_question';
+      profile.questionStrategy = decisionResult.shouldCollectLead ? 'one_question' : 'no_question';
       profile.ctaAllowed       = true;
       break;
     case 'educate':

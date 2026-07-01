@@ -154,6 +154,18 @@ test('FMT-PIPE-03: changed=false and no rules applied for already-clean text', (
   assert.equal(r.appliedRules.length, 0);
 });
 
+test('FMT-STYLE-01: robotic opening phrase is removed', () => {
+  const r = formatResponse({ text: 'จากข้อมูลที่คุณให้มาครับ Good Health Prime มี OPD ครับ' });
+  assert.equal(r.text, 'Good Health Prime มี OPD ครับ');
+  assert.ok(r.appliedRules.includes('REMOVE_ROBOTIC_PHRASES'));
+});
+
+test('FMT-STYLE-02: generic CTA spam is removed from ending', () => {
+  const r = formatResponse({ text: 'Good Health Prime มี OPD ที่เป็นสิทธิประโยชน์เฉพาะครับ\n\nมีอะไรให้ช่วยเพิ่มเติมไหมครับ?' });
+  assert.equal(r.text, 'Good Health Prime มี OPD ที่เป็นสิทธิประโยชน์เฉพาะครับ');
+  assert.ok(r.appliedRules.includes('REMOVE_ROBOTIC_PHRASES'));
+});
+
 // ─── NOOP GROUP ───────────────────────────────────────────────────────────────
 
 test('FMT-NOOP-01: empty string returns empty unchanged', () => {

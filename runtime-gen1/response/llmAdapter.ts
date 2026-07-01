@@ -36,7 +36,7 @@ const GEN1_MAX_TOKENS     = 600;
 const GEN1_TEMPERATURE    = 0.4;
 
 export const GEN1_SAFE_FALLBACK_TEXT =
-  'ขอโทษด้วยนะครับ ตอนนี้ระบบกำลังปรับปรุงอยู่ครับ มีอะไรให้ช่วยเพิ่มเติมไหมครับ?';
+  'ขอโทษด้วยนะครับ ตอนนี้ระบบกำลังปรับปรุงอยู่ครับ ขอให้คุณจิราวัฒน์ช่วยตรวจคำถามนี้ต่อให้นะครับ';
 
 // ─── Gen1-specific OpenAI client (isolated from V1 history) ───────────────────
 

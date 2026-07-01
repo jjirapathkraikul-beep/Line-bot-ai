@@ -143,6 +143,16 @@ try {
   pass('REGISTRY-13: human_handoff includes mandatory Human_Handoff.md and Escalation_Rules.md');
 } catch (e) { fail('REGISTRY-13', e); }
 
+// ── REGISTRY-14: health_insurance loads the populated Good_Health_Prime.md (Phase 19) ─
+try {
+  const healthSources = getSourcesForIntent('health_insurance');
+  const hasGoodHealthPrime = healthSources.some((s) =>
+    s.path === 'AIOS/Domains/Insurance/Products/Good_Health_Prime.md' && s.mandatory
+  );
+  assert.ok(hasGoodHealthPrime, 'Good_Health_Prime.md must be mandatory in health_insurance sources');
+  pass('REGISTRY-14: health_insurance includes mandatory Good_Health_Prime.md (Phase 18PD/19 population)');
+} catch (e) { fail('REGISTRY-14', e); }
+
 // ─── Loader tests (async) ─────────────────────────────────────────────────────
 
 import {
@@ -321,10 +331,10 @@ const STUB_MEMORY: RuntimeMemoryResolution = {
   nextBestFieldToAsk: null,
   extractedFacts: [],
   memoryDecisionReason: 'test stub',
-  memoryTrace: {
-    fieldsFromSession: [], fieldsFromMessage: [], fieldsBlocked: [],
-    leadCaptureAllowed: true, trustActive: false, medicalActive: false,
-  },
+	  memoryTrace: {
+	    fieldsFromSession: [], fieldsFromMessage: [], fieldsFromHistory: [], fieldsBlocked: [],
+	    leadCaptureAllowed: true, trustActive: false, medicalActive: false,
+	  },
 };
 
 function makeInput(intent: string, flagOverrides: Partial<IntentDetectorResult['flags']> = {}): KnowledgeSelectionInput {
@@ -525,6 +535,26 @@ async function runRuntimeTraceTests() {
     assert.ok(hasTrustPath, 'Trust signal must select trust knowledge paths');
     pass('TRACE-04: trust signal in runtime message selects trust knowledge paths');
   } catch (e) { fail('TRACE-04', e); }
+
+  // ── TRACE-05: Good Health Prime question loads the populated product file
+  //              end-to-end (Phase 18PD population + Phase 19 runtime integration) ─
+  try {
+    const output = await execute(makeRuntimeInput('Good Health Prime คุ้มครองอะไรบ้าง เบี้ยเท่าไหร่'));
+    const { trace } = output;
+    const targetPath = 'AIOS/Domains/Insurance/Products/Good_Health_Prime.md';
+
+    assert.equal(trace.detectedIntent, 'health_insurance', 'Expected intent=health_insurance for Good Health Prime question');
+    assert.ok(
+      (trace.selectedKnowledgePaths ?? []).includes(targetPath),
+      `selectedKnowledgePaths must include ${targetPath}`,
+    );
+    assert.ok(
+      !(trace.missingKnowledgePaths ?? []).includes(targetPath),
+      `${targetPath} must load successfully (not be in missingKnowledgePaths)`,
+    );
+    assert.ok((trace.loadedKnowledgeCount ?? 0) > 0, 'loadedKnowledgeCount must be > 0');
+    pass('TRACE-05: Good Health Prime question loads Good_Health_Prime.md end-to-end via executeGen1 pipeline');
+  } catch (e) { fail('TRACE-05', e); }
 }
 
 // ─── Run all tests ────────────────────────────────────────────────────────────

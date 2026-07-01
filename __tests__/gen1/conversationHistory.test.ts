@@ -83,13 +83,14 @@ function makeMemoryInput(
     replyToken:  'REPLY_TOKEN',
     timestamp:   '2026-06-29T10:00:00.000Z',
   };
-  const intentResult: IntentDetectorResult = {
-    intent:     'health_insurance',
-    confidence: 0.85,
-    flags: {
-      isTrustSignal: false, isMedicalSignal: false, isEmergency: false,
-      isHumanRequest: false, isProductIntent: true, isRecommendationIntent: false,
-    },
+	  const intentResult: IntentDetectorResult = {
+	    intent:     'health_insurance',
+	    confidence: 0.85,
+	    matchedKeywords: [],
+	    flags: {
+	      isTrustSignal: false, isMedicalSignal: false, isEmergency: false,
+	      isHumanRequest: false, isProductIntent: true, isPriceIntent: false, isRecommendationIntent: false,
+	    },
   };
   const capabilityResult = {
     primaryCapability: { capId: 'CAP-004', name: 'Health Insurance Advisory', acpPath: 'ACP-04', priority: 'HIGH' },
