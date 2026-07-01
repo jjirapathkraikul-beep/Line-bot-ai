@@ -3,7 +3,7 @@ import { upsertLead } from './lead';
 import type { ExtractedData } from './leadCapture';
 import { computeLeadScore } from './scorer';
 
-export type NotifyReason = 'phone_first' | 'handoff_complete' | 'score_high' | 'trigger_word' | 'underwriting';
+export type NotifyReason = 'phone_first' | 'handoff_complete' | 'score_high' | 'trigger_word' | 'underwriting' | 'gen1_handoff';
 
 // In-memory dedup — hydrated from KV session at request start via injectNotifiedReasons
 const sentMap = new Map<string, Set<string>>();
@@ -36,9 +36,89 @@ function buildSummaryLine(data: ExtractedData, reason: NotifyReason): string {
     score_high:       'Lead Score ถึงเกณฑ์ ≥70',
     trigger_word:     'ลูกค้าพร้อมสมัคร / ขอคุย',
     underwriting:     'มีโรคประจำตัว — ต้องพิจารณาเป็นรายกรณี',
+    gen1_handoff:     'Gen1 — ลูกค้าพร้อม handoff',
   };
   parts.push(reasonLabel[reason]);
   return parts.join(' | ');
+}
+
+// ─── Gen1 notification format ─────────────────────────────────────────────────
+// Used by CRM Flow Gen1 (crmFlowGen1.ts) for richer handoff notifications.
+
+export interface Gen1NotifyOptions {
+  displayName: string;
+  leadStatus:     string;
+  followUpStatus: string;
+  jpStatus:       string;
+  productInterest?: string;
+  interestCategory?: string;
+  budgetAnnual?: string;
+  phone?: string;
+  realName?: string;
+  preferredContactTime?: string;
+  pendingIssue?: string;
+  conversationSummary?: string;
+}
+
+export function buildGen1NotifyText(opts: Gen1NotifyOptions): string {
+  const f = (v?: string, fallback = 'ไม่ระบุ') => v?.trim() || fallback;
+  const lines: string[] = [
+    '🔥 Lead ใหม่ — ต้องติดต่อกลับ',
+    '',
+    `ชื่อ: ${f(opts.realName, opts.displayName)}`,
+    `เบอร์: ${f(opts.phone)}`,
+    `เวลาที่สะดวก: ${f(opts.preferredContactTime, 'สะดวกตลอดเวลา')}`,
+    '',
+    `สนใจ: ${f(opts.interestCategory)}`,
+    `ผลิตภัณฑ์: ${f(opts.productInterest)}`,
+    opts.budgetAnnual ? `งบ: ${Number(opts.budgetAnnual).toLocaleString('th-TH')} บาท/ปี` : '',
+    '',
+    `สถานะ Lead: ${f(opts.leadStatus)}`,
+    `Follow-up: ${f(opts.followUpStatus)}`,
+    `JP Status: ${f(opts.jpStatus, 'Open')}`,
+  ];
+
+  if (opts.pendingIssue) {
+    lines.push('', 'ประเด็นที่ต้องให้จิราวัฒน์ดู:', opts.pendingIssue);
+  }
+  if (opts.conversationSummary) {
+    lines.push('', 'สรุปการสนทนา:', opts.conversationSummary);
+  }
+
+  return lines.filter((l) => l !== undefined).join('\n');
+}
+
+export async function notifyGen1Handoff(
+  userId: string,
+  opts: Gen1NotifyOptions,
+): Promise<void> {
+  const adminUserId  = process.env.ADMIN_LINE_USER_ID;
+  const channelToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  if (!adminUserId || !channelToken) {
+    console.warn('[Handoff] ADMIN_LINE_USER_ID or LINE_CHANNEL_ACCESS_TOKEN not set — skipping');
+    return;
+  }
+  const reason: NotifyReason = 'gen1_handoff';
+  if (alreadySent(userId, reason)) {
+    console.log(`[Handoff] Gen1 skipped duplicate notification uid=${userId.substring(0, 8)}***`);
+    return;
+  }
+  const text = buildGen1NotifyText(opts);
+  const lineClient = new Client({ channelAccessToken: channelToken });
+  try {
+    await lineClient.pushMessage(adminUserId, { type: 'text', text });
+    markSent(userId, reason);
+    console.log(`[Handoff] Gen1 notified admin uid=${userId.substring(0, 8)}***`);
+    upsertLead({
+      line_user_id:        userId,
+      handoff_notified_at: new Date().toISOString(),
+      handoff_reason:      reason,
+    }).catch((err) =>
+      console.error(`[Handoff] Gen1 CRM metadata failed: ${err instanceof Error ? err.message : String(err)}`)
+    );
+  } catch (err) {
+    console.error(`[Handoff] Gen1 notify failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function buildNotifyText(
