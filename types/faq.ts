@@ -35,8 +35,13 @@ export interface Lead {
   marital_status: string;
   children: string;
   interest: string;
-  budget_annual: string;
+  budget_annual: string;       // canonical annual budget (Gen1 normalizes from monthly if needed)
   source: string;
+  // Gen1 CRM fields (Phase 19B+)
+  interest_category: string;   // e.g. health_insurance, tax_planning
+  pending_issue: string;       // issue Jirawat must handle (underwriting, claim, etc.)
+  jp_status: string;           // manual field: Open | Appointment | Signed | Close
+  gen1_jp_initialized: string; // internal: 'true' once jp_status=Open was set; prevents overwrite
 }
 
 export type LeadUpsert = Partial<Lead> & Pick<Lead, 'line_user_id'>;

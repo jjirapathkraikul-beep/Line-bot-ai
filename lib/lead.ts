@@ -2,8 +2,11 @@ import type { LeadUpsert } from '@/types/faq';
 
 const CRM_TIMEOUT_MS = 10_000;
 
-// Must match column headers in Google Sheet row 1
+// Must match column headers in Google Sheet row 1.
+// Columns A–U are V1 layout; V–X are Gen1 additions (Phase 19B).
+// Do not reorder — Apps Script maps by column position/name.
 const CRM_FIELDS: Array<keyof LeadUpsert> = [
+  // A–U — existing V1 layout (preserved)
   'line_user_id',
   'display_name',
   'real_name',
@@ -23,7 +26,17 @@ const CRM_FIELDS: Array<keyof LeadUpsert> = [
   'last_contact_date',
   'handoff_notified_at',
   'handoff_reason',
+  // Gen1 additions — new columns appended at the end
+  'budget_annual',       // V: normalized annual budget (Gen1)
+  'interest_category',   // W: e.g. health_insurance
+  'pending_issue',       // X: issue Jirawat must handle
+  'jp_status',           // Y: manual — Open | Appointment | Signed | Close
 ];
+
+// jp_status is owned by Jirawat after initial bot creation.
+// Rule: bot must NOT write jp_note, and must not overwrite jp_status after init.
+// Implementation: include jp_status in payload ONLY when `gen1_jp_initialized` is not set.
+// gen1_jp_initialized is a session flag (never sent to sheet) to prevent double-setting.
 
 export async function upsertLead(data: LeadUpsert): Promise<void> {
   const url = process.env.LEAD_SHEET_CSV_URL;
