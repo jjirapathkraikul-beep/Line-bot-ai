@@ -1,5 +1,10 @@
 import type { ExecutionContext } from '../context/contextTypes';
 import type { ConversationTurnContext } from '../core/types';
+import {
+  findHospitalRoomRate,
+  mapGhpPlanFromAmount,
+  resolveHospitalMapping,
+} from '../reference/hospitalRoomRates';
 
 export const HEALTH_INTEREST_DIRECT_ANSWER = [
   'ได้ครับ ถ้าเป็นประกันสุขภาพ ผมช่วยดูให้ได้ครับ',
@@ -49,7 +54,24 @@ export interface HealthAdvisorySlots {
   product_interest?: string;
 }
 
-const GHP_ROOM_PLAN_TIERS = [2000, 3000, 4000, 6000, 8000, 10000, 12000];
+const METRO_PROVINCE_TERMS = ['กรุงเทพ', 'กรุงเทพฯ', 'นนทบุรี', 'ปทุมธานี', 'สมุทรปราการ', 'นครปฐม', 'สมุทรสาคร'];
+const PROVINCIAL_PROVINCE_TERMS = [
+  'ชลบุรี',
+  'เชียงใหม่',
+  'เชียงราย',
+  'นครราชสีมา',
+  'ขอนแก่น',
+  'ภูเก็ต',
+  'สุราษฎร์ธานี',
+  'สงขลา',
+  'ระยอง',
+  'อยุธยา',
+  'ราชบุรี',
+  'นครศรีธรรมราช',
+  'พิษณุโลก',
+  'อุดรธานี',
+  'อุบลราชธานี',
+];
 
 function norm(text: string): string {
   return text.normalize('NFC').toLowerCase().trim();
@@ -110,7 +132,7 @@ function formatAmount(amount: number): string {
 }
 
 export function mapRoomAmountToGhpPlan(amount: number): number {
-  return GHP_ROOM_PLAN_TIERS.find((tier) => amount <= tier) ?? GHP_ROOM_PLAN_TIERS[GHP_ROOM_PLAN_TIERS.length - 1];
+  return mapGhpPlanFromAmount(amount);
 }
 
 function extractHospital(text: string): string | undefined {
@@ -119,6 +141,8 @@ function extractHospital(text: string): string | undefined {
   if (!raw) return undefined;
 
   if (normalized.includes('นนทเวช')) return 'นนทเวช';
+  if (normalized.includes('เมดพาร์ค')) return 'เมดพาร์ค';
+  if (normalized.includes('เกษมราษฎร์')) return raw.replace(/^(เข้าที่|ใช้|ไป|เข้า)\s*/i, '').trim();
 
   const hospitalMatch = raw.match(/(?:เข้าที่|ใช้|ไป|เข้า)?\s*(?:รพ\.?|โรงพยาบาล)\s*([ก-๙A-Za-z0-9 .-]{2,40})/i);
   const hospital = hospitalMatch?.[1]?.trim()
@@ -128,6 +152,13 @@ function extractHospital(text: string): string | undefined {
   if (!hospital) return undefined;
   if (norm(hospital).includes('ไหน')) return undefined;
   return hospital;
+}
+
+function classifyUnknownHospitalArea(hospitalName: string): 'provincial' | 'metro_or_unclear' {
+  const normalized = norm(hospitalName);
+  if (METRO_PROVINCE_TERMS.some((term) => normalized.includes(norm(term)))) return 'metro_or_unclear';
+  if (PROVINCIAL_PROVINCE_TERMS.some((term) => normalized.includes(norm(term)))) return 'provincial';
+  return 'metro_or_unclear';
 }
 
 function extractSlotsFromText(text: string): HealthAdvisorySlots {
@@ -225,6 +256,10 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
     return null;
   }
 
+  if (currentSlots.preferred_hospital && !slots.desired_room_amount) {
+    return buildHospitalRoomRateRecommendation(slots);
+  }
+
   if (!slots.desired_room_amount) {
     const acknowledgement = currentSlots.preferred_hospital
       ? `ได้ครับ ถ้าใช้โรงพยาบาล${slots.preferred_hospital}เป็นหลัก ผมจะใช้โรงพยาบาลนี้เป็นตัวเทียบแผนให้ครับ`
@@ -278,6 +313,75 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
   }
 
   return null;
+}
+
+function buildNextHealthQuestion(slots: HealthAdvisorySlots): string {
+  if (!slots.age) return 'ขอทราบอายุผู้เอาประกันหน่อยครับ จะได้ช่วยดูเบี้ยคร่าว ๆ ต่อได้ครับ';
+  if (!slots.budget_annual) return 'ขอทราบงบประมาณต่อปีที่อยากวางไว้คร่าว ๆ หน่อยครับ';
+  return 'ข้อมูลหลักครบแล้วครับ เดี๋ยวขั้นถัดไปควรให้คุณจิราวัฒน์ช่วยดูเบี้ยและความเหมาะสมของแผนให้ตรงเคสครับ';
+}
+
+function buildHospitalRoomRateRecommendation(slots: HealthAdvisorySlots): string {
+  const hospitalName = slots.preferred_hospital ?? '';
+  const record = findHospitalRoomRate(hospitalName);
+  if (!record) return buildUnknownHospitalRoomRateAnswer(slots);
+
+  const mapping = resolveHospitalMapping(record);
+  const amount = mapping.amount;
+  const plan = mapping.plan;
+  if (!amount || mapping.source === 'missing') return buildUnknownHospitalRoomRateAnswer(slots);
+
+  const confidenceLine = mapping.source === 'total_daily_proxy'
+    ? 'ข้อมูลนี้เป็น proxy จากยอดรวมต่อวัน เพราะยังไม่มี component ค่าห้อง+ค่าอาหารแยก จึงควรใช้แบบระมัดระวังครับ'
+    : 'ตัวเลขนี้เป็นข้อมูลอ้างอิงเบื้องต้น และควรเทียบกับค่าห้อง+ค่าอาหารล่าสุดของโรงพยาบาลอีกครั้งก่อนตัดสินใจครับ';
+  const shortfallLine = mapping.shortfallRisk
+    ? ['', 'หมายเหตุ: ถ้าค่าห้อง+ค่าอาหารจริงสูงกว่าแผน 12,000 อาจยังมีส่วนต่างค่าห้อง/อาหารเหลืออยู่ครับ']
+    : [];
+
+  return [
+    `ได้ครับ ถ้าใช้${record.hospitalNameTh}เป็นหลัก ผมจะเทียบจากค่าห้องเดี่ยวเริ่มต้นที่ใช้เทียบกับแผน Good Health Prime ก่อนนะครับ`,
+    '',
+    `จากข้อมูลอ้างอิง ค่าห้องเดี่ยวเริ่มต้นที่ใช้เทียบกับแผน Good Health Prime อยู่ที่ประมาณ ${formatAmount(amount)} บาท/วัน`,
+    '',
+    `ดังนั้นแผนที่ควรเริ่มดูคือ Good Health Prime แผนค่าห้อง ${formatAmount(plan)} หรือสูงกว่าครับ`,
+    '',
+    'ตัวเลขนี้เป็นยอดสำหรับเทียบแผนค่าห้อง ไม่ใช่ค่าใช้จ่ายรวมทั้งหมดของการรักษา',
+    '',
+    confidenceLine,
+    ...shortfallLine,
+    '',
+    'อีกจุดเด่นคือ Good Health Prime มีวงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี ซึ่งช่วยเพิ่มความคุ้มค่า เพราะถึงไม่ป่วยก็ยังมีโอกาสใช้กับการตรวจสุขภาพหรือวัคซีนได้ครับ',
+    '',
+    buildNextHealthQuestion(slots),
+  ].join('\n');
+}
+
+function buildUnknownHospitalRoomRateAnswer(slots: HealthAdvisorySlots): string {
+  const hospitalName = slots.preferred_hospital ?? 'โรงพยาบาลนี้';
+  const areaType = classifyUnknownHospitalArea(hospitalName);
+  const nextQuestion = buildNextHealthQuestion(slots);
+
+  if (areaType === 'provincial') {
+    return [
+      `ตอนนี้ผมยังไม่มีค่าห้องล่าสุดของ${hospitalName}ในฐานข้อมูลครับ`,
+      '',
+      'ถ้าเป็นโรงพยาบาลต่างจังหวัด โดยทั่วไปค่าห้องมักต่ำกว่าโรงพยาบาลเอกชนในกรุงเทพฯ และปริมณฑล เบื้องต้น Good Health Prime แผนค่าห้อง 6,000 มักเป็น baseline ที่น่าพิจารณาสำหรับหลายโรงพยาบาลต่างจังหวัดครับ',
+      '',
+      'แต่เพื่อความแม่นยำ ควรเทียบกับค่าห้อง+ค่าอาหารล่าสุดของโรงพยาบาลนั้นอีกครั้งครับ',
+      '',
+      nextQuestion,
+    ].join('\n');
+  }
+
+  return [
+    `ตอนนี้ผมยังไม่มีค่าห้องล่าสุดของ${hospitalName}ในฐานข้อมูลครับ`,
+    '',
+    'ถ้าเป็นโรงพยาบาลในกรุงเทพฯ หรือปริมณฑล ค่าห้องแต่ละแห่งต่างกันค่อนข้างมาก ผมยังไม่อยากฟันธงว่าแผนไหนพอดีครับ',
+    '',
+    'ถ้ามีรูปค่าห้องล่าสุด ส่งมาได้เลยครับ ผมช่วยเทียบกับแผน Good Health Prime ให้ได้ทันที',
+    '',
+    nextQuestion,
+  ].join('\n');
 }
 
 export function isHealthCategorySelection(text: string): boolean {

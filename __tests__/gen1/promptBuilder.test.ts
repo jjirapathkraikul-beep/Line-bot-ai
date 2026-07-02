@@ -23,6 +23,11 @@ import {
   mapRoomAmountToGhpPlan,
   resolveHealthAdvisorySlots,
 } from '../../runtime-gen1/response/healthInsuranceFlow';
+import {
+  findHospitalRoomRate,
+  resolveHospitalMapping,
+  type HospitalRoomRateRecord,
+} from '../../runtime-gen1/reference/hospitalRoomRates';
 import type { ExecutionContext }                            from '../../runtime-gen1/context/contextTypes';
 import type { RuntimeInput }                               from '../../runtime-gen1/core/types';
 
@@ -746,7 +751,7 @@ test('HEALTH-FLOW-07: selected health context replaces generic broad CTA with ho
   }
 });
 
-test('HEALTH-SLOTS-01: hospital answer in health context is captured and asks room amount next', () => {
+test('HEALTH-SLOTS-01: known hospital in health context returns GHP room-plan recommendation and asks age next', () => {
   const ctx = makeCtx();
   ctx.request.rawInput = 'เข้าที่ รพ นนทเวช';
   ctx.request.normalizedInput = 'เข้าที่ รพ นนทเวช';
@@ -764,8 +769,113 @@ test('HEALTH-SLOTS-01: hospital answer in health context is captured and asks ro
 
   assert.equal(slots.preferred_hospital, 'นนทเวช');
   assert.ok(answer?.includes('ถ้าใช้โรงพยาบาลนนทเวชเป็นหลัก'));
-  assert.ok(answer?.includes('อยากดูค่าห้องประมาณเท่าไหร่ครับ'));
+  assert.ok(answer?.includes('ค่าห้องเดี่ยวเริ่มต้นที่ใช้เทียบกับแผน Good Health Prime อยู่ที่ประมาณ 4,560 บาท/วัน'));
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000 หรือสูงกว่าครับ'));
+  assert.ok(answer?.includes('ตัวเลขนี้เป็นยอดสำหรับเทียบแผนค่าห้อง ไม่ใช่ค่าใช้จ่ายรวมทั้งหมดของการรักษา'));
+  assert.ok(answer?.includes('ขอทราบอายุผู้เอาประกันหน่อยครับ'));
+  assert.ok(!answer?.includes('อยากดูค่าห้องประมาณเท่าไหร่ครับ'));
   assert.ok(!answer?.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+});
+
+test('HEALTH-HOSPITAL-01: hospital lookup uses ghp_mapping_amount as primary mapping source', () => {
+  const record = findHospitalRoomRate('รพ นนทเวช');
+  assert.ok(record);
+
+  const mapping = resolveHospitalMapping(record);
+
+  assert.equal(mapping.source, 'ghp_mapping_amount');
+  assert.equal(mapping.amount, 4560);
+  assert.equal(mapping.plan, 6000);
+});
+
+test('HEALTH-HOSPITAL-02: hospital mapping does not recompute room+food when ghp_mapping_amount exists', () => {
+  const record: HospitalRoomRateRecord = {
+    hospitalNameTh: 'โรงพยาบาลทดสอบ',
+    aliases: ['โรงพยาบาลทดสอบ'],
+    province: 'กรุงเทพฯ',
+    area: 'ทดสอบ',
+    roomType: 'Test Room',
+    roomCharge: 1000,
+    foodCharge: 1000,
+    ghpMappingAmount: 7200,
+    suggestedGhpPlan: 8000,
+    confidence: 'High',
+    dataCompleteness: 'Synthetic unit-test record',
+    sourceType: 'Unit test',
+    mappingNote: 'Synthetic test record',
+  };
+
+  const mapping = resolveHospitalMapping(record);
+
+  assert.equal(mapping.source, 'ghp_mapping_amount');
+  assert.equal(mapping.amount, 7200);
+  assert.equal(mapping.plan, 8000);
+});
+
+test('HEALTH-HOSPITAL-03: hospital mapping falls back to room+food only when ghp_mapping_amount is missing', () => {
+  const record: HospitalRoomRateRecord = {
+    hospitalNameTh: 'โรงพยาบาลทดสอบ',
+    aliases: ['โรงพยาบาลทดสอบ'],
+    province: 'กรุงเทพฯ',
+    area: 'ทดสอบ',
+    roomType: 'Test Room',
+    roomCharge: 4500,
+    foodCharge: 900,
+    suggestedGhpPlan: 6000,
+    confidence: 'High',
+    dataCompleteness: 'Synthetic unit-test record',
+    sourceType: 'Unit test',
+    mappingNote: 'Synthetic test record',
+  };
+
+  const mapping = resolveHospitalMapping(record);
+
+  assert.equal(mapping.source, 'room_food_fallback');
+  assert.equal(mapping.amount, 5400);
+  assert.equal(mapping.plan, 6000);
+});
+
+test('HEALTH-HOSPITAL-04: unknown provincial hospital uses safe Plan 6000 baseline without exact numbers', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'เข้าที่ รพ ชลบุรี';
+  ctx.request.normalizedInput = 'เข้าที่ รพ ชลบุรี';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'สนใจประกันสุขภาพ',
+    assistantResponse: HEALTH_INTEREST_DIRECT_ANSWER,
+    timestamp: '2026-07-02T10:00:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: history });
+
+  assert.ok(answer?.includes('ตอนนี้ผมยังไม่มีค่าห้องล่าสุด'));
+  assert.ok(answer?.includes('โรงพยาบาลต่างจังหวัด'));
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000 มักเป็น baseline'));
+  assert.ok(answer?.includes('ควรเทียบกับค่าห้อง+ค่าอาหารล่าสุด'));
+  assert.ok(!answer?.includes('ค่าห้องเดี่ยวเริ่มต้นที่ใช้เทียบกับแผน Good Health Prime อยู่ที่ประมาณ'));
+});
+
+test('HEALTH-HOSPITAL-05: unknown Bangkok or perimeter hospital does not over-assume Plan 6000', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'เข้าที่ รพ บางนา สมุทรปราการ';
+  ctx.request.normalizedInput = 'เข้าที่ รพ บางนา สมุทรปราการ';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'สนใจประกันสุขภาพ',
+    assistantResponse: HEALTH_INTEREST_DIRECT_ANSWER,
+    timestamp: '2026-07-02T10:00:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: history });
+
+  assert.ok(answer?.includes('กรุงเทพฯ หรือปริมณฑล'));
+  assert.ok(answer?.includes('ผมยังไม่อยากฟันธงว่าแผนไหนพอดีครับ'));
+  assert.ok(answer?.includes('ถ้ามีรูปค่าห้องล่าสุด ส่งมาได้เลยครับ'));
+  assert.ok(!answer?.includes('แผนค่าห้อง 6,000 มักเป็น baseline'));
 });
 
 test('HEALTH-SLOTS-02: known hospital plus room and OPD maps to Good Health Prime Plan 6000 without re-asking hospital', () => {
