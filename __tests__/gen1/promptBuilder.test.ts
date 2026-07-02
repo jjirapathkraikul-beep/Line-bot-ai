@@ -975,6 +975,118 @@ test('HEALTH-HOSPITAL-10: previous assistant hospital question is enough pending
   assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000'));
 });
 
+test('HEALTH-PENDING-01: health pending slots continue hospital to age to budget without KV history', async () => {
+  const now = Date.now();
+  const session = {
+    data: {},
+    meta: { lastState: 'idle', lastIntent: 'none', stateUpdatedAt: now },
+    history: [],
+    notifiedReasons: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await runGen1LineAdapter({
+    userId:      'U_PB_PENDING_001',
+    displayName: 'Test Customer',
+    messageText: 'ประกันสุขภาพ',
+    replyToken:  'REPLY_PB_PENDING_001A',
+    timestamp:   '2026-07-02T10:00:00.000Z',
+    session,
+  });
+  assert.equal(dehydrateAll('U_PB_PENDING_001', session).meta.pendingSlot, 'preferred_hospital');
+
+  const hospitalTurn = await runGen1LineAdapter({
+    userId:      'U_PB_PENDING_001',
+    displayName: 'Test Customer',
+    messageText: 'นนทเวช',
+    replyToken:  'REPLY_PB_PENDING_001B',
+    timestamp:   '2026-07-02T10:01:00.000Z',
+    session,
+  });
+  let persisted = dehydrateAll('U_PB_PENDING_001', session);
+  assert.ok(hospitalTurn.text.includes('ประมาณ 4,560 บาท/วัน'));
+  assert.ok(hospitalTurn.text.includes('Good Health Prime แผนค่าห้อง 6,000'));
+  assert.equal(persisted.meta.gen1Slots?.preferred_hospital, 'นนทเวช');
+  assert.equal(persisted.meta.pendingSlot, 'age');
+  assert.notEqual(persisted.meta.pendingSlot, 'preferred_hospital');
+
+  const ageTurn = await runGen1LineAdapter({
+    userId:      'U_PB_PENDING_001',
+    displayName: 'Test Customer',
+    messageText: '39',
+    replyToken:  'REPLY_PB_PENDING_001C',
+    timestamp:   '2026-07-02T10:02:00.000Z',
+    session,
+  });
+  persisted = dehydrateAll('U_PB_PENDING_001', session);
+  assert.ok(ageTurn.text.includes('อายุผู้เอาประกัน 39 ปี'));
+  assert.ok(ageTurn.text.includes('ขอทราบงบประมาณต่อปี'));
+  assert.ok(!ageTurn.text.includes('ขอทราบอายุผู้เอาประกัน'));
+  assert.equal(persisted.meta.gen1Slots?.age, '39');
+  assert.equal(persisted.meta.pendingSlot, 'budget_annual');
+
+  const budgetTurn = await runGen1LineAdapter({
+    userId:      'U_PB_PENDING_001',
+    displayName: 'Test Customer',
+    messageText: '50000',
+    replyToken:  'REPLY_PB_PENDING_001D',
+    timestamp:   '2026-07-02T10:03:00.000Z',
+    session,
+  });
+  persisted = dehydrateAll('U_PB_PENDING_001', session);
+  assert.ok(budgetTurn.text.includes('งบประมาณต่อปี: 50,000 บาท'));
+  assert.ok(!budgetTurn.text.includes('ขอทราบงบประมาณต่อปี'));
+  assert.equal(persisted.meta.gen1Slots?.budget_annual, '50000');
+  assert.equal(persisted.meta.pendingSlot, undefined);
+});
+
+test('HEALTH-PENDING-02: Good Health Prime OPD question overrides pending hospital slot', async () => {
+  const now = Date.now();
+  const session = {
+    data: {},
+    meta: {
+      lastState: 'gen1_pending_slot:preferred_hospital',
+      lastIntent: 'health_insurance',
+      stateUpdatedAt: now,
+      activeFlow: 'health_insurance',
+      pendingSlot: 'preferred_hospital',
+      pendingSlotUpdatedAt: now,
+    },
+    history: [],
+    notifiedReasons: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const output = await runGen1LineAdapter({
+    userId:      'U_PB_PENDING_002',
+    displayName: 'Test Customer',
+    messageText: 'Good Health Prime มี OPD ไหม',
+    replyToken:  'REPLY_PB_PENDING_002',
+    timestamp:   '2026-07-02T10:00:00.000Z',
+    session,
+  });
+
+  assert.ok(output.text.includes('มีครับ แต่ไม่ใช่ OPD เหมาจ่ายทั่วไป'));
+  assert.ok(!output.text.includes('ค่าห้องเดี่ยวเริ่มต้นที่ใช้เทียบกับแผน'));
+});
+
+test('HEALTH-PENDING-03: tax topic does not parse as pending health age', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'ลดหย่อนภาษีได้ไหม';
+  ctx.request.normalizedInput = 'ลดหย่อนภาษีได้ไหม';
+  ctx.intent.primary = 'tax_planning';
+  ctx.memory.knownFacts = [
+    { field: 'active_flow', value: 'health_insurance', source: 'session' },
+    { field: 'pending_slot', value: 'age', source: 'session' },
+  ];
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: [] });
+
+  assert.equal(answer, null);
+});
+
 test('HEALTH-SLOTS-02: known hospital plus room and OPD maps to Good Health Prime Plan 6000 without re-asking hospital', () => {
   const ctx = makeCtx();
   ctx.request.rawInput = 'ประกันสุขภาพ ค่าห้อง6000 มี opd ด้วย';

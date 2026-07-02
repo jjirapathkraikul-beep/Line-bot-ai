@@ -51,6 +51,11 @@ interface V1StateMetadata {
   lastState?: string;
   lastIntent?: string;
   stateUpdatedAt?: number;
+  activeFlow?: string;
+  pendingSlot?: string;
+  pendingSlotQuestion?: string;
+  pendingSlotUpdatedAt?: number;
+  gen1Slots?: Record<string, string>;
 }
 
 interface V1Session {
@@ -254,6 +259,32 @@ function sessionFieldsFromV1Data(data: V1ExtractedData): string[] {
     if (data[v1Key as keyof V1ExtractedData]) captured.push(gen1Key);
   }
   return captured;
+}
+
+function extractFactsFromGen1Meta(meta: V1StateMetadata | undefined): ExtractedFact[] {
+  if (!meta) return [];
+
+  const facts: ExtractedFact[] = [];
+  if (meta.activeFlow) {
+    facts.push({ field: 'active_flow', value: meta.activeFlow, rawMatch: 'session.meta.activeFlow', confidence: 0.95 });
+  }
+  if (meta.pendingSlot) {
+    facts.push({ field: 'pending_slot', value: meta.pendingSlot, rawMatch: 'session.meta.pendingSlot', confidence: 0.95 });
+  }
+  if (meta.pendingSlotQuestion) {
+    facts.push({ field: 'pending_slot_question', value: meta.pendingSlotQuestion, rawMatch: 'session.meta.pendingSlotQuestion', confidence: 0.90 });
+  }
+  if (meta.pendingSlotUpdatedAt) {
+    facts.push({ field: 'pending_slot_updated_at', value: String(meta.pendingSlotUpdatedAt), rawMatch: 'session.meta.pendingSlotUpdatedAt', confidence: 0.90 });
+  }
+
+  for (const [field, value] of Object.entries(meta.gen1Slots ?? {})) {
+    if (!value) continue;
+    facts.push({ field, value, rawMatch: `session.meta.gen1Slots.${field}`, confidence: 0.95 });
+    facts.push({ field: `slot:${field}`, value, rawMatch: `session.meta.gen1Slots.${field}`, confidence: 0.95 });
+  }
+
+  return facts;
 }
 
 function deriveCurrentState(sess: V1Session): string {
@@ -604,7 +635,8 @@ export function resolveMemory(input: MemoryResolverInput): RuntimeMemoryResoluti
   }
 
   // History first so current message facts overwrite on the same field
-  const extractedFacts = [...historyExtracted, ...messageExtracted, ...inferredFacts];
+  const sessionMetaExtracted = extractFactsFromGen1Meta(sess.meta);
+  const extractedFacts = [...sessionMetaExtracted, ...historyExtracted, ...messageExtracted, ...inferredFacts];
 
   // Step 3: Build typed memory objects
   const customerProfile    = buildCustomerProfile(sess, extractedFacts, runtimeInput.displayName);
@@ -620,7 +652,10 @@ export function resolveMemory(input: MemoryResolverInput): RuntimeMemoryResoluti
   const knownFields = [...customerProfile.fields_captured];
 
   // Field source breakdown for audit trace
-  const sessionFieldNames = sessionFieldsFromV1Data(sess.data ?? {});
+  const sessionFieldNames = [
+    ...sessionFieldsFromV1Data(sess.data ?? {}),
+    ...sessionMetaExtracted.map((f) => f.field),
+  ];
   const historyFieldNames = historyExtracted.map((f) => f.field);
   const messageFieldNames = messageExtracted.map((f) => f.field);
   const blockedFieldNames = deferredFields.map((f) => f.field);

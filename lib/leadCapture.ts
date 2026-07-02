@@ -176,6 +176,11 @@ export interface StateMetadata {
   pendingField?:  LeadField;
   pendingQueue?:  LeadField[];
   pendingMode?:   'general' | 'premium_quote' | 'handoff';
+  activeFlow?: string;
+  pendingSlot?: string;
+  pendingSlotQuestion?: string;
+  pendingSlotUpdatedAt?: number;
+  gen1Slots?: Record<string, string>;
 }
 
 export interface SessionStateData {

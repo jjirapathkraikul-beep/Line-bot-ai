@@ -5,6 +5,7 @@ import {
   mapGhpPlanFromAmount,
   resolveHospitalMapping,
 } from '../reference/hospitalRoomRates';
+import { getPendingSlotFromFacts } from '../memory/pendingSlotManager';
 
 export const HEALTH_INTEREST_DIRECT_ANSWER = [
   'ได้ครับ ถ้าเป็นประกันสุขภาพ ผมช่วยดูให้ได้ครับ',
@@ -87,6 +88,7 @@ function hasHealthContext(ctx: ExecutionContext, history: ConversationTurnContex
 
   const n = norm(haystack);
   return n.includes('ประกันสุขภาพ') ||
+    n.includes('active_flow:health_insurance') ||
     n.includes('health_insurance') ||
     n.includes('health insurance') ||
     n.includes('good health prime');
@@ -99,24 +101,21 @@ function askedPreferredHospital(text: string): boolean {
     n.includes('ปกติเวลาเข้าโรงพยาบาล') && n.includes('โรงพยาบาลไหน');
 }
 
-function hasPendingPreferredHospitalSlot(
-  ctx: ExecutionContext,
-  history: ConversationTurnContext[] = [],
-): boolean {
+function hasPendingHealthSlot(ctx: ExecutionContext, history: ConversationTurnContext[] = []): boolean {
+  const pending = getPendingSlotFromFacts(ctx.memory.knownFacts);
+  if (pending?.activeFlow === 'health_insurance') return true;
+
   const stateSignals = [
     ctx.session.activeState,
     ctx.session.priorState,
     ctx.message.unresolvedQuestion,
     ctx.message.lastAiAction,
-    ...ctx.memory.knownFacts.map((f) => `${f.field}:${f.value}`),
   ].filter(Boolean).join('\n');
 
   const normalizedState = norm(stateSignals);
   if (
-    normalizedState.includes('gen1_pending_slot:preferred_hospital') ||
-    normalizedState.includes('pending_slot:preferred_hospital') ||
-    normalizedState.includes('pending_hospital') ||
-    normalizedState.includes('preferred_hospital')
+    normalizedState.includes('gen1_pending_slot:') ||
+    normalizedState.includes('pending_slot:')
   ) {
     return true;
   }
@@ -150,6 +149,14 @@ function isOpdPreferenceStatement(normalized: string): boolean {
     normalized.includes('เอาแบบมี opd') ||
     normalized.includes('มี opd') ||
     normalized.includes('opd ด้วย');
+}
+
+function isNonHealthTopicIntent(intent: string): boolean {
+  return intent === 'tax_planning' ||
+    intent === 'retirement_planning' ||
+    intent === 'investment_planning' ||
+    intent === 'medical_underwriting' ||
+    intent === 'trust_concern';
 }
 
 function parseIntegerAmount(text: string | undefined): number | undefined {
@@ -244,6 +251,13 @@ function extractSlotsFromKnownFacts(ctx: ExecutionContext): HealthAdvisorySlots 
     } else if (field === 'budget_annual') {
       const budget = parseIntegerAmount(value);
       if (budget) slots.budget_annual = budget;
+    } else if (field === 'preferred_hospital') {
+      slots.preferred_hospital = value;
+    } else if (field === 'desired_room_amount') {
+      const roomAmount = parseIntegerAmount(value);
+      if (roomAmount) slots.desired_room_amount = roomAmount;
+    } else if (field === 'wants_opd') {
+      slots.wants_opd = value === 'true';
     } else if (field === 'interest_category') {
       slots.interest_category = value;
     } else if (field === 'product_interest') {
@@ -278,9 +292,10 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
   const currentSlots = extractSlotsFromText(ctx.request.rawInput);
   const slots = resolveHealthAdvisorySlots(input);
   const activeHealthContext = hasHealthContext(ctx, conversationHistory);
-  const pendingPreferredHospital = hasPendingPreferredHospitalSlot(ctx, conversationHistory);
+  const pendingHealthSlot = hasPendingHealthSlot(ctx, conversationHistory);
 
-  if (!activeHealthContext && !pendingPreferredHospital && !isHealthCategorySelection(normalized)) return null;
+  if (!activeHealthContext && !pendingHealthSlot && !isHealthCategorySelection(normalized)) return null;
+  if (pendingHealthSlot && isNonHealthTopicIntent(ctx.intent.primary)) return null;
   if (isSpecificAdvisoryQuestion(normalized)) return null;
   if (isBenefitDetailQuestion(normalized) && !isOpdPreferenceStatement(normalized)) return null;
 
@@ -292,6 +307,37 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
 
   if (currentSlots.preferred_hospital && !slots.desired_room_amount) {
     return buildHospitalRoomRateRecommendation(slots);
+  }
+
+  if (slots.preferred_hospital && !slots.desired_room_amount) {
+    if (currentSlots.wants_opd !== undefined) {
+      const acknowledgement = currentSlots.wants_opd
+        ? 'ได้ครับ ถ้าอยากมี OPD ด้วย ผมจะเก็บเป็นเงื่อนไขในการเทียบแผนให้ครับ'
+        : 'ได้ครับ ถ้าไม่เน้น OPD ผมจะใช้โจทย์นี้เทียบแผนฝั่ง IPD ให้ครับ';
+      return [
+        acknowledgement,
+        '',
+        'อยากดูค่าห้องประมาณเท่าไหร่ครับ เช่น 4,000 / 6,000 / 8,000 บาท?',
+      ].join('\n');
+    }
+
+    if (!slots.age) {
+      return [
+        `ได้ครับ ถ้าใช้โรงพยาบาล${slots.preferred_hospital}เป็นหลัก ผมจะใช้โรงพยาบาลนี้เป็นตัวเทียบแผนให้ครับ`,
+        '',
+        buildNextHealthQuestion(slots),
+      ].join('\n');
+    }
+
+    if (!slots.budget_annual) {
+      return [
+        `รับทราบครับ อายุผู้เอาประกัน ${slots.age} ปี`,
+        '',
+        'ขอทราบงบประมาณต่อปีที่อยากวางไว้คร่าว ๆ หน่อยครับ',
+      ].join('\n');
+    }
+
+    return buildHealthAdvisorySummary(slots);
   }
 
   if (!slots.desired_room_amount) {
@@ -353,6 +399,21 @@ function buildNextHealthQuestion(slots: HealthAdvisorySlots): string {
   if (!slots.age) return 'ขอทราบอายุผู้เอาประกันหน่อยครับ จะได้ช่วยดูเบี้ยคร่าว ๆ ต่อได้ครับ';
   if (!slots.budget_annual) return 'ขอทราบงบประมาณต่อปีที่อยากวางไว้คร่าว ๆ หน่อยครับ';
   return 'ข้อมูลหลักครบแล้วครับ เดี๋ยวขั้นถัดไปควรให้คุณจิราวัฒน์ช่วยดูเบี้ยและความเหมาะสมของแผนให้ตรงเคสครับ';
+}
+
+function buildHealthAdvisorySummary(slots: HealthAdvisorySlots): string {
+  const lines = [
+    'ข้อมูลหลักครบสำหรับตั้งต้นเทียบแผนแล้วครับ',
+    '',
+    slots.preferred_hospital ? `• โรงพยาบาลหลัก: ${slots.preferred_hospital}` : null,
+    slots.desired_room_amount ? `• ค่าห้องที่ต้องการ: ${formatAmount(slots.desired_room_amount)} บาท/วัน` : null,
+    slots.age ? `• อายุผู้เอาประกัน: ${slots.age} ปี` : null,
+    slots.budget_annual ? `• งบประมาณต่อปี: ${formatAmount(slots.budget_annual)} บาท` : null,
+    '',
+    'เดี๋ยวขั้นถัดไปควรให้คุณจิราวัฒน์ช่วยดูเบี้ยและความเหมาะสมของแผน Good Health Prime ให้ตรงเคสครับ',
+  ].filter((line): line is string => line !== null);
+
+  return lines.join('\n');
 }
 
 function buildHospitalRoomRateRecommendation(slots: HealthAdvisorySlots): string {

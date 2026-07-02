@@ -8,7 +8,15 @@
 
 import { executeGen1 } from '../../core/runtime';
 import type { RuntimeInput, RuntimeOutput } from '../../core/types';
-import { setRuntimeStateMetadata } from '../../../lib/leadCapture';
+import {
+  clearPendingSlot,
+  detectPendingSlotFromAssistantResponse,
+  getPendingSlotFromSession,
+  saveResolvedSlot,
+  setPendingSlot,
+  type PendingSlotResolution,
+} from '../../memory/pendingSlotManager';
+import { findHospitalRoomRate } from '../../reference/hospitalRoomRates';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,51 +48,99 @@ export interface LineTraceEntry {
   timestamp:        string;
 }
 
-const PENDING_HOSPITAL_SLOT_STATE = 'gen1_pending_slot:preferred_hospital';
-const HEALTH_ADVISORY_STATE = 'gen1_health_advisory';
+function norm(text: string): string {
+  return text.normalize('NFC').toLowerCase().trim();
+}
 
-function asMutableSession(session: unknown): { meta?: Record<string, unknown> } | null {
-  if (session !== null && typeof session === 'object') {
-    return session as { meta?: Record<string, unknown> };
+function parseNumber(text: string): number | null {
+  const digits = text.replace(/[^\d]/g, '');
+  if (!digits) return null;
+  const amount = Number.parseInt(digits, 10);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function isTopicChange(text: string): boolean {
+  const n = norm(text);
+  return n.includes('ลดหย่อน') ||
+    n.includes('ภาษี') ||
+    n.includes('good health prime') ||
+    n.includes('opd') ||
+    n.includes('ตรวจสุขภาพ') ||
+    n.includes('วัคซีน') ||
+    n.includes('มะเร็ง') ||
+    n.includes('คุ้มครองอะไร') ||
+    n.includes('คืออะไร');
+}
+
+function extractHospital(text: string): string | null {
+  const raw = text.normalize('NFC').trim();
+  const n = norm(raw);
+  if (!raw) return null;
+  if (n.includes('นนทเวช')) return 'นนทเวช';
+  if (n.includes('เมดพาร์ค')) return 'เมดพาร์ค';
+  if (n.includes('เกษมราษฎร์')) return raw.replace(/^(เข้าที่|ใช้|ไป|เข้า)\s*/i, '').trim();
+
+  const hospitalMatch = raw.match(/(?:เข้าที่|ใช้|ไป|เข้า)?\s*(?:รพ\.?|โรงพยาบาล)\s*([ก-๙A-Za-z0-9 .-]{2,40})/i);
+  const hospital = hospitalMatch?.[1]?.trim()
+    .replace(/[?.!]+$/g, '')
+    .replace(/\s+/g, ' ');
+  if (!hospital || norm(hospital).includes('ไหน')) return null;
+  return hospital;
+}
+
+function resolvePendingSlotValue(slot: string, message: string): PendingSlotResolution | null {
+  const n = norm(message);
+
+  if (slot === 'preferred_hospital') {
+    const hospital = extractHospital(message);
+    if (!hospital) return null;
+    if (!findHospitalRoomRate(hospital) && message.length <= 2) return null;
+    return { field: 'preferred_hospital', value: hospital };
   }
+
+  if (slot === 'age') {
+    const ageMatch = n.match(/^(\d{1,2})$/) ?? n.match(/^อายุ\s*(\d{1,2})$/) ?? n.match(/^(\d{1,2})\s*ปี$/);
+    const age = parseNumber(ageMatch?.[1] ?? '');
+    if (!age || age <= 0 || age >= 100) return null;
+    return { field: 'age', value: String(age) };
+  }
+
+  if (slot === 'budget_annual') {
+    if (n.includes('ค่าห้อง')) return null;
+    const budget = parseNumber(message);
+    if (!budget || budget < 1000) return null;
+    return { field: 'budget_annual', value: String(budget) };
+  }
+
+  if (slot === 'desired_room_amount') {
+    const room = parseNumber(message);
+    if (!room || room < 1000 || room > 50000) return null;
+    return { field: 'desired_room_amount', value: String(room) };
+  }
+
   return null;
 }
 
-function asksForPreferredHospital(text: string): boolean {
-  return text.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ') ||
-    text.includes('ปกติเข้าโรงพยาบาลไหนเป็นหลัก');
+function resolvePendingSlotBeforeRuntime(userId: string, session: unknown, messageText: string): void {
+  const pending = getPendingSlotFromSession(session);
+  if (!pending || isTopicChange(messageText)) return;
+
+  const resolution = resolvePendingSlotValue(pending.pendingSlot, messageText);
+  if (!resolution) return;
+
+  saveResolvedSlot(userId, session, pending.activeFlow, resolution);
+  clearPendingSlot(userId, session, pending.activeFlow);
 }
 
 function updateGen1PendingSlot(userId: string, session: unknown, outputText: string): void {
-  const mutableSession = asMutableSession(session);
-  if (!mutableSession) return;
-
-  const meta = mutableSession.meta ?? {};
-  const currentState = typeof meta.lastState === 'string' ? meta.lastState : null;
-
-  if (asksForPreferredHospital(outputText)) {
-    const updates = {
-      lastState:  PENDING_HOSPITAL_SLOT_STATE,
-      lastIntent: 'health_insurance',
-    };
-    mutableSession.meta = {
-      ...meta,
-      ...updates,
-      stateUpdatedAt: Date.now(),
-    };
-    setRuntimeStateMetadata(userId, updates);
+  const nextPending = detectPendingSlotFromAssistantResponse(outputText);
+  if (nextPending) {
+    setPendingSlot(userId, session, nextPending);
     return;
   }
 
-  if (currentState === PENDING_HOSPITAL_SLOT_STATE) {
-    const updates = { lastState: HEALTH_ADVISORY_STATE };
-    mutableSession.meta = {
-      ...meta,
-      ...updates,
-      stateUpdatedAt: Date.now(),
-    };
-    setRuntimeStateMetadata(userId, updates);
-  }
+  const currentPending = getPendingSlotFromSession(session);
+  if (currentPending) clearPendingSlot(userId, session, currentPending.activeFlow);
 }
 
 // ─── Pure conversions ─────────────────────────────────────────────────────────
@@ -132,6 +188,7 @@ export function stripGen1Prefix(message: string): string | null {
 // command works regardless of the feature-flag environment variable.
 // Logs [GEN1_LINE] with all required fields on every call.
 export async function runGen1LineAdapter(input: LineAdapterInput): Promise<LineAdapterOutput> {
+  resolvePendingSlotBeforeRuntime(input.userId, input.session, input.messageText);
   const runtimeInput = buildRuntimeInput(input);
   const output       = await executeGen1(runtimeInput);
   updateGen1PendingSlot(input.userId, input.session, output.text);
