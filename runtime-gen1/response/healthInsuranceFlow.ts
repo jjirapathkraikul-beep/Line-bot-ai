@@ -5,7 +5,7 @@ import {
   mapGhpPlanFromAmount,
   resolveHospitalMapping,
 } from '../reference/hospitalRoomRates';
-import { getPendingSlotFromFacts } from '../memory/pendingSlotManager';
+import { getPendingSlotFromFacts, parseThaiAnnualBudget } from '../memory/pendingSlotManager';
 
 export const HEALTH_INTEREST_DIRECT_ANSWER = [
   'ได้ครับ ถ้าเป็นประกันสุขภาพ ผมช่วยดูให้ได้ครับ',
@@ -51,6 +51,9 @@ export interface HealthAdvisorySlots {
   wants_opd?: boolean;
   age?: number;
   budget_annual?: number;
+  budget_annual_min?: number;
+  budget_annual_max?: number;
+  budget_annual_note?: string;
   interest_category?: string;
   product_interest?: string;
 }
@@ -159,6 +162,21 @@ function isNonHealthTopicIntent(intent: string): boolean {
     intent === 'trust_concern';
 }
 
+function isGhpPlan6000DetailQuestion(normalized: string): boolean {
+  const asksPlan6000 = normalized.includes('แผน6000') ||
+    normalized.includes('แผน 6000') ||
+    normalized.includes('plan6000') ||
+    normalized.includes('plan 6000') ||
+    normalized.includes('ค่าห้อง 6000') ||
+    normalized.includes('ค่าห้อง6000');
+  const asksDetail = normalized.includes('รายละเอียด') ||
+    normalized.includes('มีอะไรบ้าง') ||
+    normalized.includes('คุ้มครองอะไร') ||
+    normalized.includes('ขอดู') ||
+    normalized.includes('ดูแผน');
+  return asksPlan6000 && asksDetail;
+}
+
 function parseIntegerAmount(text: string | undefined): number | undefined {
   if (!text) return undefined;
   const digits = text.replace(/[^\d]/g, '');
@@ -169,6 +187,15 @@ function parseIntegerAmount(text: string | undefined): number | undefined {
 
 function formatAmount(amount: number): string {
   return amount.toLocaleString('en-US');
+}
+
+function formatBudget(slots: HealthAdvisorySlots): string | null {
+  if (slots.budget_annual_min && slots.budget_annual_max) {
+    return `${formatAmount(slots.budget_annual_min)}–${formatAmount(slots.budget_annual_max)} บาท`;
+  }
+  if (slots.budget_annual_note) return `${slots.budget_annual_note} บาท`;
+  if (slots.budget_annual) return `${formatAmount(slots.budget_annual)} บาท`;
+  return null;
 }
 
 export function mapRoomAmountToGhpPlan(amount: number): number {
@@ -230,9 +257,16 @@ function extractSlotsFromText(text: string): HealthAdvisorySlots {
   const age = parseIntegerAmount(ageMatch?.[1]);
   if (age && age > 0 && age < 100) slots.age = age;
 
-  const budgetMatch = normalized.match(/(?:งบ|ปีละ)\s*(\d[\d,]*)/);
-  const budget = parseIntegerAmount(budgetMatch?.[1]);
-  if (budget) slots.budget_annual = budget;
+  if (normalized.includes('งบ') || normalized.includes('ปีละ') || normalized.includes('หมื่น')) {
+    const budget = parseThaiAnnualBudget(normalized);
+    if (budget?.max) {
+      slots.budget_annual_min = budget.min;
+      slots.budget_annual_max = budget.max;
+      slots.budget_annual_note = budget.display;
+    } else if (budget?.min) {
+      slots.budget_annual = budget.min;
+    }
+  }
 
   return slots;
 }
@@ -251,6 +285,14 @@ function extractSlotsFromKnownFacts(ctx: ExecutionContext): HealthAdvisorySlots 
     } else if (field === 'budget_annual') {
       const budget = parseIntegerAmount(value);
       if (budget) slots.budget_annual = budget;
+    } else if (field === 'budget_annual_min') {
+      const budget = parseIntegerAmount(value);
+      if (budget) slots.budget_annual_min = budget;
+    } else if (field === 'budget_annual_max') {
+      const budget = parseIntegerAmount(value);
+      if (budget) slots.budget_annual_max = budget;
+    } else if (field === 'budget_annual_note') {
+      slots.budget_annual_note = value;
     } else if (field === 'preferred_hospital') {
       slots.preferred_hospital = value;
     } else if (field === 'desired_room_amount') {
@@ -329,7 +371,7 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
       ].join('\n');
     }
 
-    if (!slots.budget_annual) {
+    if (!slots.budget_annual && !slots.budget_annual_min) {
       return [
         `รับทราบครับ อายุผู้เอาประกัน ${slots.age} ปี`,
         '',
@@ -378,7 +420,7 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
 
     const nextQuestion = !slots.age
       ? 'ขอทราบอายุผู้เอาประกันหน่อยครับ จะได้ช่วยดูเบี้ยคร่าว ๆ ต่อได้ครับ'
-      : !slots.budget_annual
+      : !slots.budget_annual && !slots.budget_annual_min
       ? 'ขอทราบงบประมาณต่อปีที่อยากวางไว้คร่าว ๆ หน่อยครับ'
       : 'ข้อมูลหลักครบแล้วครับ เดี๋ยวขั้นถัดไปควรให้คุณจิราวัฒน์ช่วยดูเบี้ยและความเหมาะสมของแผนให้ตรงเคสครับ';
 
@@ -397,7 +439,7 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
 
 function buildNextHealthQuestion(slots: HealthAdvisorySlots): string {
   if (!slots.age) return 'ขอทราบอายุผู้เอาประกันหน่อยครับ จะได้ช่วยดูเบี้ยคร่าว ๆ ต่อได้ครับ';
-  if (!slots.budget_annual) return 'ขอทราบงบประมาณต่อปีที่อยากวางไว้คร่าว ๆ หน่อยครับ';
+  if (!slots.budget_annual && !slots.budget_annual_min) return 'ขอทราบงบประมาณต่อปีที่อยากวางไว้คร่าว ๆ หน่อยครับ';
   return 'ข้อมูลหลักครบแล้วครับ เดี๋ยวขั้นถัดไปควรให้คุณจิราวัฒน์ช่วยดูเบี้ยและความเหมาะสมของแผนให้ตรงเคสครับ';
 }
 
@@ -408,12 +450,52 @@ function buildHealthAdvisorySummary(slots: HealthAdvisorySlots): string {
     slots.preferred_hospital ? `• โรงพยาบาลหลัก: ${slots.preferred_hospital}` : null,
     slots.desired_room_amount ? `• ค่าห้องที่ต้องการ: ${formatAmount(slots.desired_room_amount)} บาท/วัน` : null,
     slots.age ? `• อายุผู้เอาประกัน: ${slots.age} ปี` : null,
-    slots.budget_annual ? `• งบประมาณต่อปี: ${formatAmount(slots.budget_annual)} บาท` : null,
+    formatBudget(slots) ? `• งบประมาณต่อปี: ${formatBudget(slots)}` : null,
     '',
     'เดี๋ยวขั้นถัดไปควรให้คุณจิราวัฒน์ช่วยดูเบี้ยและความเหมาะสมของแผน Good Health Prime ให้ตรงเคสครับ',
   ].filter((line): line is string => line !== null);
 
   return lines.join('\n');
+}
+
+function buildGhpPlan6000DetailAnswer(slots: HealthAdvisorySlots): string {
+  const hospitalRecord = slots.preferred_hospital ? findHospitalRoomRate(slots.preferred_hospital) : null;
+  const hospitalMapping = hospitalRecord ? resolveHospitalMapping(hospitalRecord) : null;
+  const hospitalLine = slots.preferred_hospital && hospitalMapping?.amount && hospitalMapping.plan === 6000
+    ? [
+      '',
+      `ถ้าใช้ รพ. ${slots.preferred_hospital}เป็นหลัก แผน 6,000 ถือเป็นแผนที่ควรเริ่มดู เพราะค่าที่ใช้เทียบแผนของ${slots.preferred_hospital}อยู่ประมาณ ${formatAmount(hospitalMapping.amount)} บาท/วันครับ`,
+    ]
+    : slots.preferred_hospital
+    ? [
+      '',
+      `ถ้าใช้ รพ. ${slots.preferred_hospital}เป็นหลัก ขั้นต่อไปควรเทียบค่าห้องจริงกับแผนที่เหมาะสมอีกครั้งครับ`,
+    ]
+    : [];
+  const ageBudgetLine = slots.age && formatBudget(slots)
+    ? [
+      '',
+      `จากอายุ ${slots.age} ปี และงบประมาณ ${formatBudget(slots)}/ปี เดี๋ยวขั้นต่อไปคือเทียบเบี้ยจริงว่าอยู่ในงบไหมครับ`,
+    ]
+    : slots.age
+    ? [
+      '',
+      `จากอายุ ${slots.age} ปี เดี๋ยวขั้นต่อไปคือเทียบเบี้ยจริงของแผนนี้ครับ`,
+    ]
+    : [];
+
+  return [
+    'ได้ครับ แผน Good Health Prime ค่าห้อง 6,000 โดยหลัก ๆ คือ',
+    '',
+    '1. ค่าห้อง 6,000 บาท/วัน',
+    '2. วงเงินค่ารักษาต่อปีกรณีเจ็บป่วย/อุบัติเหตุ 3,000,000 บาท',
+    '3. วงเงินกรณี 18 โรคร้ายแรง 6,000,000 บาท',
+    '4. มีวงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน 8,000 บาท/ปี',
+    '',
+    'หมวด OPD/ตรวจสุขภาพ/วัคซีนเป็นสิทธิประโยชน์เสริมของแผน ไม่ใช่เงินคืนหรือส่วนลดเบี้ยครับ',
+    ...hospitalLine,
+    ...ageBudgetLine,
+  ].join('\n');
 }
 
 function buildHospitalRoomRateRecommendation(slots: HealthAdvisorySlots): string {
@@ -504,6 +586,10 @@ export function getHealthInsuranceFlowDirectAnswer(input: HealthInsuranceFlowInp
   if (ctx.decision.action === 'handoff' || ctx.decision.shouldEscalate) return null;
 
   const normalized = norm(ctx.request.rawInput);
+  if (isGhpPlan6000DetailQuestion(normalized) && hasHealthContext(ctx, conversationHistory)) {
+    return buildGhpPlan6000DetailAnswer(resolveHealthAdvisorySlots(input));
+  }
+
   const slotContinuationAnswer = buildHealthSlotContinuationAnswer(input);
   if (slotContinuationAnswer) return slotContinuationAnswer;
 

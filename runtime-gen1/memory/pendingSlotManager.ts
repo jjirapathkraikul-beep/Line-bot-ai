@@ -20,10 +20,17 @@ export interface PendingSlotState {
 export interface PendingSlotResolution {
   field: string;
   value: string;
+  fields?: Record<string, string>;
 }
 
 const PENDING_SLOT_TTL_MS = 30 * 60 * 1000;
 const HEALTH_ADVISORY_STATE = 'gen1_flow:health_insurance';
+
+export interface ThaiAnnualBudgetParseResult {
+  min: number;
+  max?: number;
+  display: string;
+}
 
 function asMutableSession(session: unknown): { meta?: StateMetadata } | null {
   if (session !== null && typeof session === 'object') {
@@ -158,9 +165,10 @@ export function saveResolvedSlot(
     lastIntent: 'none',
     stateUpdatedAt: now,
   };
+  const resolvedFields = resolution.fields ?? { [resolution.field]: resolution.value };
   const gen1Slots = {
     ...(meta.gen1Slots ?? {}),
-    [resolution.field]: resolution.value,
+    ...resolvedFields,
   };
   const updates: Partial<StateMetadata> = {
     activeFlow,
@@ -170,6 +178,70 @@ export function saveResolvedSlot(
 
   mutableSession.meta = { ...meta, ...updates, stateUpdatedAt: now };
   setRuntimeStateMetadata(userId, updates);
+}
+
+function formatAmount(amount: number): string {
+  return amount.toLocaleString('en-US');
+}
+
+function parseBudgetNumberToken(token: string): number | null {
+  const cleaned = token.replace(/[,\s]/g, '');
+  if (!cleaned) return null;
+
+  const hasMuen = cleaned.includes('หมื่น');
+  const digits = cleaned.replace(/[^\d]/g, '');
+  if (!digits) return null;
+
+  const value = Number.parseInt(digits, 10);
+  if (!Number.isFinite(value)) return null;
+
+  if (hasMuen) return value * 10000;
+  if (value >= 1000) return value;
+  if (value >= 1 && value <= 9) return value * 10000;
+  return value;
+}
+
+export function parseThaiAnnualBudget(text: string): ThaiAnnualBudgetParseResult | null {
+  const normalized = text.normalize('NFC').toLowerCase().replace(/–|—/g, '-').trim();
+  if (!normalized) return null;
+
+  const rangeMatch = normalized.match(/(\d[\d,\s]*)(?:\s*-\s*)(\d[\d,\s]*(?:หมื่น)?)/);
+  if (rangeMatch) {
+    const leftRaw = rangeMatch[1].replace(/[,\s]/g, '');
+    const rightRaw = rangeMatch[2].replace(/[,\s]/g, '');
+    let min = parseBudgetNumberToken(leftRaw);
+    const max = parseBudgetNumberToken(rightRaw);
+    if (!min || !max) return null;
+
+    if (!leftRaw.includes('หมื่น') && Number.parseInt(leftRaw, 10) < 1000 && max >= 10000) {
+      const magnitude = 10 ** (String(max).length - String(Number.parseInt(leftRaw, 10)).length);
+      min = Number.parseInt(leftRaw, 10) * magnitude;
+      if (min < 10000) min = Number.parseInt(leftRaw, 10) * 10000;
+    }
+
+    if (min > max) return null;
+    return {
+      min,
+      max,
+      display: `${formatAmount(min)}–${formatAmount(max)}`,
+    };
+  }
+
+  const singleMuenMatch = normalized.match(/(\d[\d,\s]*)\s*หมื่น/);
+  if (singleMuenMatch) {
+    const amount = parseBudgetNumberToken(`${singleMuenMatch[1]}หมื่น`);
+    if (!amount) return null;
+    return { min: amount, display: formatAmount(amount) };
+  }
+
+  const explicitAmountMatch = normalized.match(/\d[\d,\s]{3,}/);
+  if (explicitAmountMatch) {
+    const amount = parseBudgetNumberToken(explicitAmountMatch[0]);
+    if (!amount) return null;
+    return { min: amount, display: formatAmount(amount) };
+  }
+
+  return null;
 }
 
 export function detectPendingSlotFromAssistantResponse(text: string): {

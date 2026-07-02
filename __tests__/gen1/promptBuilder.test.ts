@@ -26,6 +26,9 @@ import {
   resolveHealthAdvisorySlots,
 } from '../../runtime-gen1/response/healthInsuranceFlow';
 import {
+  parseThaiAnnualBudget,
+} from '../../runtime-gen1/memory/pendingSlotManager';
+import {
   findHospitalRoomRate,
   resolveHospitalMapping,
   type HospitalRoomRateRecord,
@@ -1085,6 +1088,116 @@ test('HEALTH-PENDING-03: tax topic does not parse as pending health age', () => 
   const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: [] });
 
   assert.equal(answer, null);
+});
+
+test('HEALTH-BUDGET-01: Thai shorthand budget range 3-40000 parses as 30,000-40,000, not 340,000', () => {
+  const parsed = parseThaiAnnualBudget('3-40000');
+
+  assert.equal(parsed?.min, 30000);
+  assert.equal(parsed?.max, 40000);
+  assert.equal(parsed?.display, '30,000–40,000');
+});
+
+test('HEALTH-BUDGET-02: Thai shorthand budget range 3-4 หมื่น parses as 30,000-40,000', () => {
+  const parsed = parseThaiAnnualBudget('3-4 หมื่น');
+
+  assert.equal(parsed?.min, 30000);
+  assert.equal(parsed?.max, 40000);
+  assert.equal(parsed?.display, '30,000–40,000');
+});
+
+test('HEALTH-BUDGET-03: explicit budget range 30000-40000 parses as 30,000-40,000', () => {
+  const parsed = parseThaiAnnualBudget('30000-40000');
+
+  assert.equal(parsed?.min, 30000);
+  assert.equal(parsed?.max, 40000);
+  assert.equal(parsed?.display, '30,000–40,000');
+});
+
+test('HEALTH-BUDGET-04: pending budget range is summarized safely and does not become 340,000', async () => {
+  const now = Date.now();
+  const session = {
+    data: {},
+    meta: {
+      lastState: 'gen1_pending_slot:budget_annual',
+      lastIntent: 'health_insurance',
+      stateUpdatedAt: now,
+      activeFlow: 'health_insurance',
+      pendingSlot: 'budget_annual',
+      pendingSlotUpdatedAt: now,
+      gen1Slots: {
+        preferred_hospital: 'นนทเวช',
+        age: '39',
+      },
+    },
+    history: [],
+    notifiedReasons: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const output = await runGen1LineAdapter({
+    userId:      'U_PB_BUDGET_004',
+    displayName: 'Test Customer',
+    messageText: '3-40000',
+    replyToken:  'REPLY_PB_BUDGET_004',
+    timestamp:   '2026-07-02T10:03:00.000Z',
+    session,
+  });
+  const persisted = dehydrateAll('U_PB_BUDGET_004', session);
+
+  assert.ok(output.text.includes('งบประมาณต่อปี: 30,000–40,000 บาท'));
+  assert.ok(!output.text.includes('340,000'));
+  assert.equal(persisted.meta.gen1Slots?.budget_annual_min, '30000');
+  assert.equal(persisted.meta.gen1Slots?.budget_annual_max, '40000');
+  assert.equal(persisted.meta.gen1Slots?.budget_annual_note, '30,000–40,000');
+  assert.equal(persisted.meta.pendingSlot, undefined);
+});
+
+test('HEALTH-PLAN-6000-01: Plan 6000 detail request after GHP context answers product facts directly', async () => {
+  const now = Date.now();
+  const session = {
+    data: {},
+    meta: {
+      lastState: 'gen1_flow:health_insurance',
+      lastIntent: 'health_insurance',
+      stateUpdatedAt: now,
+      activeFlow: 'health_insurance',
+      gen1Slots: {
+        preferred_hospital: 'นนทเวช',
+        age: '39',
+        budget_annual_min: '30000',
+        budget_annual_max: '40000',
+        budget_annual_note: '30,000–40,000',
+      },
+    },
+    history: [],
+    notifiedReasons: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const output = await runGen1LineAdapter({
+    userId:      'U_PB_PLAN_6000_001',
+    displayName: 'Test Customer',
+    messageText: 'ขอดูรายละเอียดแผน6000 หน่อย',
+    replyToken:  'REPLY_PB_PLAN_6000_001',
+    timestamp:   '2026-07-02T10:04:00.000Z',
+    session,
+  });
+
+  assert.ok(output.text.includes('Good Health Prime ค่าห้อง 6,000'));
+  assert.ok(output.text.includes('ค่าห้อง 6,000 บาท/วัน'));
+  assert.ok(output.text.includes('3,000,000 บาท'));
+  assert.ok(output.text.includes('18 โรคร้ายแรง 6,000,000 บาท'));
+  assert.ok(output.text.includes('ตรวจสุขภาพ / OPD / ฉีดวัคซีน 8,000 บาท/ปี'));
+  assert.ok(output.text.includes('ไม่ใช่เงินคืน'));
+  assert.ok(output.text.includes('นนทเวช'));
+  assert.ok(output.text.includes('4,560 บาท/วัน'));
+  assert.ok(output.text.includes('อายุ 39 ปี'));
+  assert.ok(output.text.includes('30,000–40,000 บาท/ปี'));
+  assert.ok(!output.text.includes('ข้อมูลหลักครบสำหรับตั้งต้นเทียบแผน'));
+  assert.ok(!output.text.includes('เดี๋ยวขั้นถัดไปควรให้คุณจิราวัฒน์ช่วยดู'));
 });
 
 test('HEALTH-SLOTS-02: known hospital plus room and OPD maps to Good Health Prime Plan 6000 without re-asking hospital', () => {

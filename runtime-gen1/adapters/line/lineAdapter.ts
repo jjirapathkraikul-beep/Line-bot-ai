@@ -12,6 +12,7 @@ import {
   clearPendingSlot,
   detectPendingSlotFromAssistantResponse,
   getPendingSlotFromSession,
+  parseThaiAnnualBudget,
   saveResolvedSlot,
   setPendingSlot,
   type PendingSlotResolution,
@@ -107,9 +108,20 @@ function resolvePendingSlotValue(slot: string, message: string): PendingSlotReso
 
   if (slot === 'budget_annual') {
     if (n.includes('ค่าห้อง')) return null;
-    const budget = parseNumber(message);
-    if (!budget || budget < 1000) return null;
-    return { field: 'budget_annual', value: String(budget) };
+    const budget = parseThaiAnnualBudget(message);
+    if (!budget || budget.min < 1000) return null;
+    if (budget.max) {
+      return {
+        field: 'budget_annual_note',
+        value: budget.display,
+        fields: {
+          budget_annual_min: String(budget.min),
+          budget_annual_max: String(budget.max),
+          budget_annual_note: budget.display,
+        },
+      };
+    }
+    return { field: 'budget_annual', value: String(budget.min) };
   }
 
   if (slot === 'desired_room_amount') {
