@@ -216,6 +216,10 @@ export function setLastIntent(userId: string, intent: string): void {
   saveStateMetadata(userId, { lastIntent: intent, lastState: getCurrentState(userId) });
 }
 
+export function setRuntimeStateMetadata(userId: string, updates: Partial<StateMetadata>): void {
+  saveStateMetadata(userId, updates);
+}
+
 export function getStateDebugInfo(userId: string): {
   currentState:    string;
   lastState:       string;

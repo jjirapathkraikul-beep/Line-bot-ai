@@ -92,6 +92,39 @@ function hasHealthContext(ctx: ExecutionContext, history: ConversationTurnContex
     n.includes('good health prime');
 }
 
+function askedPreferredHospital(text: string): boolean {
+  const n = norm(text);
+  return n.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลัก') ||
+    n.includes('ปกติเข้าโรงพยาบาลไหนเป็นหลัก') ||
+    n.includes('ปกติเวลาเข้าโรงพยาบาล') && n.includes('โรงพยาบาลไหน');
+}
+
+function hasPendingPreferredHospitalSlot(
+  ctx: ExecutionContext,
+  history: ConversationTurnContext[] = [],
+): boolean {
+  const stateSignals = [
+    ctx.session.activeState,
+    ctx.session.priorState,
+    ctx.message.unresolvedQuestion,
+    ctx.message.lastAiAction,
+    ...ctx.memory.knownFacts.map((f) => `${f.field}:${f.value}`),
+  ].filter(Boolean).join('\n');
+
+  const normalizedState = norm(stateSignals);
+  if (
+    normalizedState.includes('gen1_pending_slot:preferred_hospital') ||
+    normalizedState.includes('pending_slot:preferred_hospital') ||
+    normalizedState.includes('pending_hospital') ||
+    normalizedState.includes('preferred_hospital')
+  ) {
+    return true;
+  }
+
+  const lastTurn = history[history.length - 1];
+  return lastTurn ? askedPreferredHospital(lastTurn.assistantResponse) : false;
+}
+
 function isBenefitDetailQuestion(normalized: string): boolean {
   return normalized.includes('opd') ||
     normalized.includes('ผู้ป่วยนอก') ||
@@ -245,8 +278,9 @@ function buildHealthSlotContinuationAnswer(input: HealthInsuranceFlowInput): str
   const currentSlots = extractSlotsFromText(ctx.request.rawInput);
   const slots = resolveHealthAdvisorySlots(input);
   const activeHealthContext = hasHealthContext(ctx, conversationHistory);
+  const pendingPreferredHospital = hasPendingPreferredHospitalSlot(ctx, conversationHistory);
 
-  if (!activeHealthContext && !isHealthCategorySelection(normalized)) return null;
+  if (!activeHealthContext && !pendingPreferredHospital && !isHealthCategorySelection(normalized)) return null;
   if (isSpecificAdvisoryQuestion(normalized)) return null;
   if (isBenefitDetailQuestion(normalized) && !isOpdPreferenceStatement(normalized)) return null;
 

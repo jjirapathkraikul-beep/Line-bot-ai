@@ -9,6 +9,8 @@ import { generateResponse, __setMockLlmFn,
          GEN1_SAFE_FALLBACK_TEXT }                          from '../../runtime-gen1/response/llmAdapter';
 import { validateResponse, RESPONSE_SAFE_FALLBACK_TEXT }   from '../../runtime-gen1/response/responseValidator';
 import { execute, RUNTIME_VERSION }                         from '../../runtime-gen1/core/runtime';
+import { runGen1LineAdapter }                               from '../../runtime-gen1/adapters/line/lineAdapter';
+import { dehydrateAll }                                     from '../../lib/session';
 import {
   GHP_COMBINED_BUCKET_DIRECT_ANSWER,
   GHP_OPD_DIRECT_ANSWER,
@@ -876,6 +878,101 @@ test('HEALTH-HOSPITAL-05: unknown Bangkok or perimeter hospital does not over-as
   assert.ok(answer?.includes('ผมยังไม่อยากฟันธงว่าแผนไหนพอดีครับ'));
   assert.ok(answer?.includes('ถ้ามีรูปค่าห้องล่าสุด ส่งมาได้เลยครับ'));
   assert.ok(!answer?.includes('แผนค่าห้อง 6,000 มักเป็น baseline'));
+});
+
+test('HEALTH-HOSPITAL-06: LINE adapter persists pending hospital slot for short follow-up without KV history', async () => {
+  const now = Date.now();
+  const session = {
+    data: {},
+    meta: { lastState: 'idle', lastIntent: 'none', stateUpdatedAt: now },
+    history: [],
+    notifiedReasons: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const first = await runGen1LineAdapter({
+    userId:      'U_PB_HEALTH_006',
+    displayName: 'Test Customer',
+    messageText: 'ประกันสุขภาพ',
+    replyToken:  'REPLY_PB_HEALTH_006A',
+    timestamp:   '2026-07-02T10:00:00.000Z',
+    session,
+  });
+
+  assert.ok(first.text.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+  assert.equal(session.meta.lastState, 'gen1_pending_slot:preferred_hospital');
+  assert.equal(dehydrateAll('U_PB_HEALTH_006', session).meta.lastState, 'gen1_pending_slot:preferred_hospital');
+
+  const second = await runGen1LineAdapter({
+    userId:      'U_PB_HEALTH_006',
+    displayName: 'Test Customer',
+    messageText: 'นนทเวช',
+    replyToken:  'REPLY_PB_HEALTH_006B',
+    timestamp:   '2026-07-02T10:01:00.000Z',
+    session,
+  });
+
+  assert.ok(second.text.includes('ถ้าใช้โรงพยาบาลนนทเวชเป็นหลัก'));
+  assert.ok(second.text.includes('ประมาณ 4,560 บาท/วัน'));
+  assert.ok(second.text.includes('Good Health Prime แผนค่าห้อง 6,000'));
+  assert.ok(!second.text.includes('โรงพยาบาลที่มีชื่อเสียง'));
+});
+
+test('HEALTH-HOSPITAL-07: pending hospital slot maps explicit Nonthavej hospital name', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'โรงพยาบาลนนทเวช';
+  ctx.request.normalizedInput = 'โรงพยาบาลนนทเวช';
+  ctx.session.activeState = 'gen1_pending_slot:preferred_hospital';
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: [] });
+
+  assert.ok(answer?.includes('ถ้าใช้โรงพยาบาลนนทเวชเป็นหลัก'));
+  assert.ok(answer?.includes('ประมาณ 4,560 บาท/วัน'));
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000'));
+});
+
+test('HEALTH-HOSPITAL-08: pending hospital slot maps MedPark to Plan 8000', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'เมดพาร์ค';
+  ctx.request.normalizedInput = 'เมดพาร์ค';
+  ctx.session.activeState = 'gen1_pending_slot:preferred_hospital';
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: [] });
+
+  assert.ok(answer?.includes('ถ้าใช้โรงพยาบาลเมดพาร์คเป็นหลัก'));
+  assert.ok(answer?.includes('ประมาณ 7,200 บาท/วัน'));
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 8,000'));
+});
+
+test('HEALTH-HOSPITAL-09: bare hospital name without health or pending context does not force GHP recommendation', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'นนทเวช';
+  ctx.request.normalizedInput = 'นนทเวช';
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: [] });
+
+  assert.equal(answer, null);
+});
+
+test('HEALTH-HOSPITAL-10: previous assistant hospital question is enough pending context when history exists', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'รพ.นนทเวช';
+  ctx.request.normalizedInput = 'รพ.นนทเวช';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'ประกันสุขภาพ',
+    assistantResponse: HEALTH_CATEGORY_CONFIRMATION_DIRECT_ANSWER,
+    timestamp: '2026-07-02T10:00:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: history });
+
+  assert.ok(answer?.includes('ถ้าใช้โรงพยาบาลนนทเวชเป็นหลัก'));
+  assert.ok(answer?.includes('ประมาณ 4,560 บาท/วัน'));
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000'));
 });
 
 test('HEALTH-SLOTS-02: known hospital plus room and OPD maps to Good Health Prime Plan 6000 without re-asking hospital', () => {

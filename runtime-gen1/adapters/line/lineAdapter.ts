@@ -8,6 +8,7 @@
 
 import { executeGen1 } from '../../core/runtime';
 import type { RuntimeInput, RuntimeOutput } from '../../core/types';
+import { setRuntimeStateMetadata } from '../../../lib/leadCapture';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,53 @@ export interface LineTraceEntry {
   validationPassed: boolean;
   responseLength:   number;
   timestamp:        string;
+}
+
+const PENDING_HOSPITAL_SLOT_STATE = 'gen1_pending_slot:preferred_hospital';
+const HEALTH_ADVISORY_STATE = 'gen1_health_advisory';
+
+function asMutableSession(session: unknown): { meta?: Record<string, unknown> } | null {
+  if (session !== null && typeof session === 'object') {
+    return session as { meta?: Record<string, unknown> };
+  }
+  return null;
+}
+
+function asksForPreferredHospital(text: string): boolean {
+  return text.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ') ||
+    text.includes('ปกติเข้าโรงพยาบาลไหนเป็นหลัก');
+}
+
+function updateGen1PendingSlot(userId: string, session: unknown, outputText: string): void {
+  const mutableSession = asMutableSession(session);
+  if (!mutableSession) return;
+
+  const meta = mutableSession.meta ?? {};
+  const currentState = typeof meta.lastState === 'string' ? meta.lastState : null;
+
+  if (asksForPreferredHospital(outputText)) {
+    const updates = {
+      lastState:  PENDING_HOSPITAL_SLOT_STATE,
+      lastIntent: 'health_insurance',
+    };
+    mutableSession.meta = {
+      ...meta,
+      ...updates,
+      stateUpdatedAt: Date.now(),
+    };
+    setRuntimeStateMetadata(userId, updates);
+    return;
+  }
+
+  if (currentState === PENDING_HOSPITAL_SLOT_STATE) {
+    const updates = { lastState: HEALTH_ADVISORY_STATE };
+    mutableSession.meta = {
+      ...meta,
+      ...updates,
+      stateUpdatedAt: Date.now(),
+    };
+    setRuntimeStateMetadata(userId, updates);
+  }
 }
 
 // ─── Pure conversions ─────────────────────────────────────────────────────────
@@ -86,6 +134,7 @@ export function stripGen1Prefix(message: string): string | null {
 export async function runGen1LineAdapter(input: LineAdapterInput): Promise<LineAdapterOutput> {
   const runtimeInput = buildRuntimeInput(input);
   const output       = await executeGen1(runtimeInput);
+  updateGen1PendingSlot(input.userId, input.session, output.text);
   const logEntry     = buildLogEntry(output, input.timestamp);
 
   console.log('[GEN1_LINE]', JSON.stringify({
