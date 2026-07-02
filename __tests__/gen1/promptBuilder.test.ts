@@ -20,6 +20,8 @@ import {
   HEALTH_INTEREST_DIRECT_ANSWER,
   HEALTH_OPTIONS_DIRECT_ANSWER,
   getHealthInsuranceFlowDirectAnswer,
+  mapRoomAmountToGhpPlan,
+  resolveHealthAdvisorySlots,
 } from '../../runtime-gen1/response/healthInsuranceFlow';
 import type { ExecutionContext }                            from '../../runtime-gen1/context/contextTypes';
 import type { RuntimeInput }                               from '../../runtime-gen1/core/types';
@@ -742,6 +744,138 @@ test('HEALTH-FLOW-07: selected health context replaces generic broad CTA with ho
     __setMockLlmFn(null);
     process.env.AI_RUNTIME_MODE = savedMode ?? 'v1';
   }
+});
+
+test('HEALTH-SLOTS-01: hospital answer in health context is captured and asks room amount next', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'เข้าที่ รพ นนทเวช';
+  ctx.request.normalizedInput = 'เข้าที่ รพ นนทเวช';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'สนใจประกันสุขภาพ',
+    assistantResponse: HEALTH_INTEREST_DIRECT_ANSWER,
+    timestamp: '2026-07-02T10:00:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const slots = resolveHealthAdvisorySlots({ executionContext: ctx, conversationHistory: history });
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: history });
+
+  assert.equal(slots.preferred_hospital, 'นนทเวช');
+  assert.ok(answer?.includes('ถ้าใช้โรงพยาบาลนนทเวชเป็นหลัก'));
+  assert.ok(answer?.includes('อยากดูค่าห้องประมาณเท่าไหร่ครับ'));
+  assert.ok(!answer?.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+});
+
+test('HEALTH-SLOTS-02: known hospital plus room and OPD maps to Good Health Prime Plan 6000 without re-asking hospital', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'ประกันสุขภาพ ค่าห้อง6000 มี opd ด้วย';
+  ctx.request.normalizedInput = 'ประกันสุขภาพ ค่าห้อง6000 มี opd ด้วย';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'เข้าที่ รพ นนทเวช',
+    assistantResponse: 'ได้ครับ ถ้าใช้โรงพยาบาลนนทเวชเป็นหลัก ผมจะใช้โรงพยาบาลนี้เป็นตัวเทียบแผนให้ครับ',
+    timestamp: '2026-07-02T10:01:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const slots = resolveHealthAdvisorySlots({ executionContext: ctx, conversationHistory: history });
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: history });
+
+  assert.equal(slots.preferred_hospital, 'นนทเวช');
+  assert.equal(slots.desired_room_amount, 6000);
+  assert.equal(slots.wants_opd, true);
+  assert.equal(mapRoomAmountToGhpPlan(slots.desired_room_amount), 6000);
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000'));
+  assert.ok(answer?.includes('วงเงินย่อยหมวด ตรวจสุขภาพ / OPD / ฉีดวัคซีน ต่อปี'));
+  assert.ok(answer?.includes('ตรงนี้ช่วยเพิ่มความคุ้มค่า'));
+  assert.ok(answer?.includes('ขอทราบอายุผู้เอาประกันหน่อยครับ'));
+  assert.ok(!answer?.includes('อยากมี OPD / ตรวจสุขภาพ / วัคซีน เพิ่มด้วยไหมครับ'));
+  assert.ok(!answer?.includes('ปกติเวลาเข้าโรงพยาบาล ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+});
+
+test('HEALTH-SLOTS-03: short room answer can recommend without OPD as required slot', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'ค่าห้อง6000';
+  ctx.request.normalizedInput = 'ค่าห้อง6000';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'เข้าที่ รพ นนทเวช',
+    assistantResponse: 'อยากดูค่าห้องประมาณเท่าไหร่ครับ เช่น 4,000 / 6,000 / 8,000 บาท?',
+    timestamp: '2026-07-02T10:01:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const slots = resolveHealthAdvisorySlots({ executionContext: ctx, conversationHistory: history });
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: history });
+
+  assert.equal(slots.preferred_hospital, 'นนทเวช');
+  assert.equal(slots.desired_room_amount, 6000);
+  assert.equal(slots.wants_opd, undefined);
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000'));
+  assert.ok(answer?.includes('ขอทราบอายุผู้เอาประกันหน่อยครับ'));
+  assert.ok(!answer?.includes('อยากมี OPD'));
+  assert.ok(!answer?.includes('ต้องการ OPD'));
+  assert.ok(!answer?.includes('ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+});
+
+test('HEALTH-SLOTS-04: short room and OPD answer works when health context already exists', () => {
+  const ctx = makeCtx();
+  ctx.request.rawInput = 'ค่าห้อง6000 มี opd ด้วย';
+  ctx.request.normalizedInput = 'ค่าห้อง6000 มี opd ด้วย';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'เข้าที่ รพ นนทเวช',
+    assistantResponse: 'อยากดูค่าห้องประมาณเท่าไหร่ครับ เช่น 4,000 / 6,000 / 8,000 บาท?',
+    timestamp: '2026-07-02T10:01:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const answer = getHealthInsuranceFlowDirectAnswer({ executionContext: ctx, conversationHistory: history });
+
+  assert.ok(answer?.includes('Good Health Prime แผนค่าห้อง 6,000'));
+  assert.ok(answer?.includes('ตรงนี้ช่วยเพิ่มความคุ้มค่า'));
+  assert.ok(answer?.includes('ขอทราบอายุผู้เอาประกันหน่อยครับ'));
+  assert.ok(!answer?.includes('อยากมี OPD / ตรวจสุขภาพ / วัคซีน เพิ่มด้วยไหมครับ'));
+  assert.ok(answer?.includes('ถ้าใช้โรงพยาบาลนนทเวชเป็นหลัก'));
+  assert.ok(!answer?.includes('ใช้โรงพยาบาลไหนเป็นหลักครับ'));
+});
+
+test('HEALTH-SLOTS-05: OPD preference statements are captured without validation-risk handoff', () => {
+  const trueCtx = makeCtx();
+  trueCtx.request.rawInput = 'มี OPD';
+  trueCtx.request.normalizedInput = 'มี OPD';
+  const falseCtx = makeCtx();
+  falseCtx.request.rawInput = 'ไม่เอา OPD';
+  falseCtx.request.normalizedInput = 'ไม่เอา OPD';
+
+  const history = [{
+    sessionId: 's1',
+    userMessage: 'เข้าที่ รพ นนทเวช',
+    assistantResponse: 'อยากดูค่าห้องประมาณเท่าไหร่ครับ เช่น 4,000 / 6,000 / 8,000 บาท?',
+    timestamp: '2026-07-02T10:01:00.000Z',
+    intent: 'health_insurance',
+  }];
+
+  const trueSlots = resolveHealthAdvisorySlots({ executionContext: trueCtx, conversationHistory: history });
+  const falseSlots = resolveHealthAdvisorySlots({ executionContext: falseCtx, conversationHistory: history });
+  const trueAnswer = getHealthInsuranceFlowDirectAnswer({ executionContext: trueCtx, conversationHistory: history });
+  const falseAnswer = getHealthInsuranceFlowDirectAnswer({ executionContext: falseCtx, conversationHistory: history });
+
+  assert.equal(trueSlots.wants_opd, true);
+  assert.equal(falseSlots.wants_opd, false);
+  assert.ok(trueAnswer?.includes('อยากดูค่าห้องประมาณเท่าไหร่ครับ'));
+  assert.ok(falseAnswer?.includes('อยากดูค่าห้องประมาณเท่าไหร่ครับ'));
+});
+
+test('HEALTH-SLOTS-06: between-tier room amount maps to next higher Good Health Prime tier', () => {
+  assert.equal(mapRoomAmountToGhpPlan(4500), 6000);
+  assert.equal(mapRoomAmountToGhpPlan(6000), 6000);
+  assert.equal(mapRoomAmountToGhpPlan(12500), 12000);
 });
 
 test('GENERIC-CTA-01: broad unclear insurance planning may still ask broad category follow-up', async () => {
